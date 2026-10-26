@@ -1,0 +1,47 @@
+{
+  "name": "ElevenLabs — Inbound Initiation",
+  "meta": {
+    "description": "Gives an inbound Maple Grove call the dynamic variables the agent requires. Outbound calls already send these and do not use this webhook. See /docs/N8N_WORKFLOWS.md."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: Inbound Initiation",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-480, 0],
+      "parameters": {
+        "path": "elevenlabs-inbound",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "prepare",
+      "name": "Inbound Variables",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-220, 0],
+      "parameters": {
+        "jsCode": "const ORG = '11111111-1111-1111-1111-111111111111';\n\nreturn [{\n  json: {\n    type: 'conversation_initiation_client_data',\n    dynamic_variables: {\n      organization_id: ORG,\n      direction: 'inbound',\n      patient_name: 'there',\n      caller_name: 'there',\n      call_reason: 'your recent visit',\n      opening_line: 'Thank you for calling Maple Grove Dental Clinic. This is the virtual receptionist. How can I help you today?'\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond: Initiation",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [40, 0],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Inbound Initiation": { "main": [[{ "node": "Inbound Variables", "type": "main", "index": 0 }]] },
+    "Inbound Variables": { "main": [[{ "node": "Respond: Initiation", "type": "main", "index": 0 }]] }
+  }
+}

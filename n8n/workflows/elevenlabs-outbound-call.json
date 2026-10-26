@@ -1,0 +1,125 @@
+{
+  "name": "ElevenLabs — Outbound Call",
+  "meta": {
+    "description": "Places an outbound call through the Maple Grove ElevenLabs agent. The existing post-call webhook files the finished call. See /docs/N8N_WORKFLOWS.md."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: Outbound Call",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-980, 0],
+      "parameters": {
+        "path": "outbound-call",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "prepare",
+      "name": "Prepare Outbound Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-720, 0],
+      "parameters": {
+        "jsCode": "const AGENT_ID = '';\nconst AGENT_PHONE_NUMBER_ID = '';\nconst PROVIDER = 'twilio';\nconst ORG = '11111111-1111-1111-1111-111111111111';\n\nconst body = $input.first().json.body ?? $input.first().json;\nconst errors = [];\nconst agentId = String(body.agent_id || AGENT_ID).trim();\nconst phoneNumberId = String(body.agent_phone_number_id || AGENT_PHONE_NUMBER_ID).trim();\nconst provider = String(body.provider || PROVIDER).trim();\nconst patientName = String(body.patient_name || '').trim();\nconst reason = String(body.reason || '').trim();\nconst phoneRaw = String(body.phone || body.to_number || '').trim();\nconst digits = phoneRaw.replace(/[^0-9]/g, '');\nconst phone = `+${digits}`;\n\nif (!agentId) errors.push('Set AGENT_ID in Prepare Outbound Call, or send agent_id.');\nif (!phoneNumberId) errors.push('Set AGENT_PHONE_NUMBER_ID in Prepare Outbound Call, or send agent_phone_number_id.');\nif (/^\\+?\\d{7,}$/.test(phoneNumberId)) errors.push('AGENT_PHONE_NUMBER_ID must be the ElevenLabs phone number id (it starts with phnum_), not the +1 phone number.');\nif (!['twilio', 'sip_trunk'].includes(provider)) errors.push('provider must be twilio or sip_trunk.');\nif (!patientName) errors.push('patient_name is required.');\nif (!reason) errors.push('reason is required.');\nif (digits.length < 7) errors.push('phone must include at least 7 digits.');\n\nconst urls = {\n  twilio: 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call',\n  sip_trunk: 'https://api.elevenlabs.io/v1/convai/sip-trunk/outbound-call'\n};\nconst firstName = patientName.split(/\\s+/)[0];\n\nreturn [{\n  json: {\n    _valid: errors.length === 0,\n    _errors: errors,\n    elevenlabs_url: urls[provider] || urls.twilio,\n    elevenlabs_body: {\n      agent_id: agentId,\n      agent_phone_number_id: phoneNumberId,\n      to_number: phone,\n      conversation_initiation_client_data: {\n        dynamic_variables: {\n          organization_id: String(body.organization_id || ORG).trim(),\n          direction: 'outbound',\n          patient_name: patientName,\n          caller_name: patientName,\n          call_reason: reason,\n          opening_line: `Hi ${firstName}, this is Maple Grove Dental Clinic calling about ${reason}. Do you have a moment?`\n        }\n      }\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "ready",
+      "name": "Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-460, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json._valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_invalid",
+      "name": "Respond: Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-220, 180],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._errors.join(' ') } }}",
+        "options": { "responseCode": 400 }
+      }
+    },
+    {
+      "id": "place_call",
+      "name": "Place Outbound Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-220, -80],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.elevenlabs_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.elevenlabs_body) }}",
+        "options": {
+          "timeout": 45000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "elevenlabs-api",
+          "name": "ElevenLabs API"
+        }
+      }
+    },
+    {
+      "id": "read_response",
+      "name": "Read ElevenLabs Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [20, -80],
+      "parameters": {
+        "jsCode": "function asText(value) {\n  if (value == null || value === '') return '';\n  if (typeof value === 'string') return value;\n  if (Array.isArray(value)) return value.map(asText).filter(Boolean).join(' ');\n  if (typeof value === 'object') return asText(value.message || value.msg || value.status || value.error || value.description) || JSON.stringify(value);\n  return String(value);\n}\nlet payload = $json.body !== undefined ? $json.body : $json;\nif (typeof payload === 'string') {\n  try { payload = JSON.parse(payload); } catch (e) { payload = { message: payload }; }\n}\nif (payload && payload.body !== undefined && (payload.statusCode || payload.status)) {\n  payload = payload.body;\n  if (typeof payload === 'string') {\n    try { payload = JSON.parse(payload); } catch (e) { payload = { message: payload }; }\n  }\n}\nconst status = Number($json.statusCode || $json.status || 0);\nconst detail = asText(payload && payload.detail) || asText(payload && payload.error) || asText($json.error);\nconst upstream = asText(payload && payload.message);\nconst ok = status >= 200 && status < 300 && (!payload || payload.success !== false);\nlet failure = upstream || detail;\nif (!failure || failure === '{}') failure = `ElevenLabs did not start the call (HTTP ${status}).`;\nif (/first_message|override/i.test(failure)) failure += ' The greeting is the opening_line variable, so leave the first-message override off.';\nif (/sip/i.test(failure)) failure += ' In Prepare Outbound Call, set PROVIDER to sip_trunk.';\nreturn [{\n  json: {\n    success: ok,\n    conversation_id: (payload && payload.conversation_id) || null,\n    message: ok ? (upstream || 'Outbound call started.') : failure,\n    status_code: 200\n  }\n}];"
+      }
+    },
+    {
+      "id": "respond_result",
+      "name": "Respond: Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [260, -80],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.success ? { success: true, conversation_id: $json.conversation_id, message: $json.message } : { success: false, error: $json.message } }}",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Outbound Call": { "main": [[{ "node": "Prepare Outbound Call", "type": "main", "index": 0 }]] },
+    "Prepare Outbound Call": { "main": [[{ "node": "Ready?", "type": "main", "index": 0 }]] },
+    "Ready?": {
+      "main": [
+        [{ "node": "Place Outbound Call", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Invalid", "type": "main", "index": 0 }]
+      ]
+    },
+    "Place Outbound Call": { "main": [[{ "node": "Read ElevenLabs Response", "type": "main", "index": 0 }]] },
+    "Read ElevenLabs Response": { "main": [[{ "node": "Respond: Result", "type": "main", "index": 0 }]] }
+  }
+}

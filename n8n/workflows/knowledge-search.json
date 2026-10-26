@@ -1,0 +1,489 @@
+{
+  "name": "Knowledge — Search",
+  "meta": {
+    "description": "Embeds a clinic question, finds the closest passages in Supabase, and writes one answer from those passages. Fees, times, and names must come from the document."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: Knowledge Search",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1000,
+        0
+      ],
+      "parameters": {
+        "path": "knowledge-search",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -780,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body ?? $input.first().json;\nconst uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst query = String(body.query || '').trim();\nconst organizationId = String(body.organization_id || '');\nconst errors = [];\nif (query.length < 3) errors.push('Enter at least 3 characters to search.');\nif (query.length > 500) errors.push('Enter a shorter question.');\nif (!uuid.test(organizationId)) errors.push('organization_id is required.');\nreturn [{ json: { query, organization_id: organizationId, _valid: errors.length === 0, _errors: errors } }];"
+      }
+    },
+    {
+      "id": "validation_passed",
+      "name": "Validation Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_invalid",
+      "name": "Respond: Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -340,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._errors.join(' ') } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "embed_question",
+      "name": "Embed Question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -340,
+        -40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'text-embedding-3-small', input: $json.query }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-api",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "id": "prepare_search",
+      "name": "Prepare Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "const embedding = $json.data && $json.data[0] && $json.data[0].embedding;\nif (!Array.isArray(embedding) || embedding.length !== 1536) {\n  return [{ json: { _ok: false, _error: 'The embedding service did not return a search vector.' } }];\n}\nconst request = $('Validate Request').first().json;\nreturn [{ json: { _ok: true, query_embedding: '[' + embedding.join(',') + ']', organization_id: request.organization_id } }];"
+      }
+    },
+    {
+      "id": "vector_ready",
+      "name": "Vector Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        100,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_embed_failed",
+      "name": "Respond: Embed Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        320,
+        180
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._error } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "match_chunks",
+      "name": "Match Chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        320,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/rpc/match_document_chunks",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query_embedding: $json.query_embedding, match_count: 5, filter_organization_id: $json.organization_id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "prepare_answer",
+      "name": "Prepare Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        540,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst rows = Array.isArray(body) ? body : [];\nconst hits = rows.map((row) => ({\n  id: row.id,\n  document_id: row.document_id,\n  file_name: row.file_name,\n  category: row.category,\n  content: String(row.content || ''),\n  chunk_index: row.chunk_index,\n  similarity: Number(row.similarity)\n})).filter((hit) => hit.content && hit.similarity >= 0.3).slice(0, 4);\nif (!hits.length) return [{ json: { _ready: false } }];\nconst question = $('Validate Request').first().json.query;\nconst passages = hits.map((hit, index) => '[' + (index + 1) + '] ' + hit.file_name + '\\n' + hit.content).join('\\n\\n');\nconst system = 'You answer staff questions for Maple Grove Dental Clinic. Use only the numbered passages. Do not add facts, fees, times, names, phone numbers, or advice that are not written there. Copy numbers, times, and names exactly. Give one direct answer in one or two sentences. Do not list related topics. Set passage to the number of the single passage you used. If none of the passages answer the question, set answer to \"The clinic documents do not say.\" and passage to 0. Reply with JSON only: {\"answer\":\"...\",\"passage\":1}';\nreturn [{ json: { _ready: true, hits, system_prompt: system, user_prompt: 'Question: ' + question + '\\n\\nPassages:\\n' + passages } }];"
+      }
+    },
+    {
+      "id": "answer_ready",
+      "name": "Answer Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        760,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._ready }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_no_answer",
+      "name": "Respond: No Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        980,
+        40
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, answer: 'The clinic documents do not say.', hits: [] } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "write_answer",
+      "name": "Write Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        -220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $json.system_prompt }, { role: 'user', content: $json.user_prompt } ] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-api",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "id": "read_answer",
+      "name": "Read Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -220
+      ],
+      "parameters": {
+        "jsCode": "const prepared = $('Prepare Answer').first().json;\nconst hits = prepared.hits || [];\nconst raw = $json.choices && $json.choices[0] && $json.choices[0].message && $json.choices[0].message.content;\nlet parsed = null;\ntry { parsed = JSON.parse(raw || ''); } catch (error) { parsed = null; }\nconst answer = parsed && typeof parsed.answer === 'string' ? parsed.answer.trim() : '';\nconst passage = parsed ? Number(parsed.passage) : NaN;\nconst missing = 'The clinic documents do not say.';\nif (!answer || answer === missing || passage === 0) return [{ json: { answer: missing, hits: [] } }];\nconst hit = hits[passage - 1];\nif (!hit) return [{ json: { answer: hits[0] ? hits[0].content : missing, hits: hits[0] ? [hits[0]] : [] } }];\nfunction digits(value) { return String(value).replace(/\\D/g, ''); }\nfunction phones(text) { return (String(text).match(/\\(?\\d{3}\\)?[\\s.-]*\\d{3}[\\s.-]*\\d{4}/g) || []).map(digits); }\nfunction facts(text) { return String(text).match(/\\$\\d+(?:\\.\\d+)?|\\b\\d{1,2}:\\d{2}\\b|\\b\\d+\\s*hours?\\b/gi) || []; }\nconst source = hit.content;\nconst phoneMismatch = phones(answer).some((phone) => phone && !phones(source).includes(phone));\nconst factMismatch = facts(answer).some((fact) => !source.toLowerCase().includes(String(fact).toLowerCase()));\nif (phoneMismatch || factMismatch) return [{ json: { answer: source, hits: [hit] } }];\nreturn [{ json: { answer, hits: [hit] } }];"
+      }
+    },
+    {
+      "id": "respond_answer",
+      "name": "Respond: Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        -220
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, answer: $json.answer, hits: $json.hits } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Knowledge Search": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Validation Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Passed?": {
+      "main": [
+        [
+          {
+            "node": "Embed Question",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Question": {
+      "main": [
+        [
+          {
+            "node": "Prepare Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Search": {
+      "main": [
+        [
+          {
+            "node": "Vector Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector Ready?": {
+      "main": [
+        [
+          {
+            "node": "Match Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Embed Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Chunks": {
+      "main": [
+        [
+          {
+            "node": "Prepare Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Answer": {
+      "main": [
+        [
+          {
+            "node": "Answer Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer Ready?": {
+      "main": [
+        [
+          {
+            "node": "Write Answer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: No Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Answer": {
+      "main": [
+        [
+          {
+            "node": "Read Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Answer": {
+      "main": [
+        [
+          {
+            "node": "Respond: Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

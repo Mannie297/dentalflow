@@ -1,0 +1,129 @@
+{
+  "name": "ElevenLabs — Call Completed",
+  "meta": {
+    "description": "Receives an ElevenLabs post-call webhook, maps a finished or unanswered call into the DentalFlow call payload, and posts it to CORE — Call Intake. See /docs/N8N_WORKFLOWS.md."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: ElevenLabs Call",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        0
+      ],
+      "parameters": {
+        "path": "elevenlabs-call",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "map_call",
+      "name": "Map ElevenLabs Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -640,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst raw = item.body ?? item;\nconst data = raw.data ?? {};\nconst ORG = '11111111-1111-1111-1111-111111111111';\nconst INTENTS = new Set(['new_patient_inquiry','existing_patient','appointment_booking','appointment_reschedule','emergency','billing_insurance','general_question','other']);\nconst OUTCOMES = new Set(['booked','callback_requested','information_provided','transferred_to_staff','voicemail','no_action','lost']);\n\nfunction collected(id) {\n  const entry = data.analysis?.data_collection_results?.[id];\n  if (entry == null) return null;\n  const value = typeof entry === 'object' && entry !== null && 'value' in entry ? entry.value : entry;\n  if (value == null) return null;\n  const text = String(value).trim();\n  return text || null;\n}\n\nfunction allowed(value, set) {\n  return value && set.has(value) ? value : null;\n}\n\nfunction result(call, reason) {\n  return [{ json: { ...call, skip: !call.phone, reason: call.phone ? null : reason } }];\n}\n\nif (raw.type === 'post_call_transcription') {\n  const phoneCall = data.metadata?.phone_call ?? {};\n  const dynamic = data.conversation_initiation_client_data?.dynamic_variables ?? {};\n  const started = data.metadata?.start_time_unix_secs\n    ? new Date(Number(data.metadata.start_time_unix_secs) * 1000).toISOString()\n    : new Date().toISOString();\n  const summary = data.analysis?.transcript_summary ? String(data.analysis.transcript_summary).trim() : null;\n  const outcome = allowed(collected('outcome'), OUTCOMES);\n  const lines = Array.isArray(data.transcript) ? data.transcript.flatMap((turn) => {\n    const text = turn && turn.message ? String(turn.message).trim() : '';\n    if (!text) return [];\n    return [{ speaker: turn.role === 'agent' ? 'ai' : 'patient', timestamp_seconds: Math.round(Number(turn.time_in_call_secs) || 0), text }];\n  }) : [];\n  const transcript = lines.length || summary ? { lines, summary: summary || '', recommended_follow_up: outcome === 'callback_requested' ? 'Front desk should call back within 2 business hours.' : null } : null;\n  return result({\n    organization_id: dynamic.organization_id || ORG,\n    direction: phoneCall.direction === 'outbound' || dynamic.direction === 'outbound' ? 'outbound' : 'inbound',\n    caller_name: collected('caller_name') || dynamic.patient_name || dynamic.caller_name || 'Unknown Caller',\n    phone: phoneCall.external_number || '',\n    status: 'completed',\n    intent: allowed(collected('intent'), INTENTS),\n    outcome,\n    duration_seconds: Math.round(Number(data.metadata?.call_duration_secs) || 0),\n    started_at: started,\n    notes: summary,\n    ai_handled: true,\n    transcript\n  }, 'No caller phone number. A dashboard test chat does not include one.');\n}\n\nif (raw.type === 'call_initiation_failure') {\n  const failureDynamic = data.conversation_initiation_client_data?.dynamic_variables ?? {};\n  const body = data.metadata?.body ?? {};\n  const inbound = failureDynamic.direction === 'inbound' || String(body.Direction || '').toLowerCase().includes('inbound');\n  const phone = inbound\n    ? (body.From || body.Caller || body.from_number || '')\n    : (body.To || body.Called || body.to_number || '');\n  return result({\n    organization_id: failureDynamic.organization_id || ORG,\n    direction: inbound ? 'inbound' : 'outbound',\n    caller_name: failureDynamic.patient_name || 'Unknown Caller',\n    phone,\n    status: 'missed',\n    intent: null,\n    outcome: null,\n    duration_seconds: 0,\n    started_at: raw.event_timestamp ? new Date(Number(raw.event_timestamp) * 1000).toISOString() : new Date().toISOString(),\n    notes: data.failure_reason ? `Call was not answered (${data.failure_reason}).` : 'Call was not answered.',\n    ai_handled: false,\n    transcript: null\n  }, 'No phone number on the failed call.');\n}\n\nreturn [{ json: { skip: true, reason: 'Ignored event ' + (raw.type || 'unknown') + '.', phone: '' } }];"
+      }
+    },
+    {
+      "id": "has_phone",
+      "name": "Has Phone?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -380,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            },
+            {
+              "leftValue": "={{ $json.phone }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "post_call_intake",
+      "name": "Post to Call Intake",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -120,
+        -80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://mannie333.app.n8n.cloud/webhook/call-intake",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ organization_id: $json.organization_id, direction: $json.direction, caller_name: $json.caller_name, phone: $json.phone, status: $json.status, intent: $json.intent, outcome: $json.outcome, duration_seconds: $json.duration_seconds, started_at: $json.started_at, notes: $json.notes, ai_handled: $json.ai_handled === true, transcript: $json.transcript || null }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: ElevenLabs Call": {
+      "main": [
+        [
+          {
+            "node": "Map ElevenLabs Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map ElevenLabs Call": {
+      "main": [
+        [
+          {
+            "node": "Has Phone?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Phone?": {
+      "main": [
+        [
+          {
+            "node": "Post to Call Intake",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  }
+}

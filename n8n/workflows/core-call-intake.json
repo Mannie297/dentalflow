@@ -1,0 +1,240 @@
+{
+  "name": "CORE — Call Intake",
+  "meta": {
+    "description": "Receives a finished inbound or outbound call (from the Calls page or a phone system), finds or creates the patient, writes the call, and logs call.completed or call.missed. See /docs/N8N_WORKFLOWS.md."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: Call Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1200, 0],
+      "parameters": {
+        "path": "call-intake",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-980, 0],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body ?? $input.first().json;\nconst errors = [];\nconst directions = ['inbound', 'outbound'];\nconst statuses = ['completed', 'missed', 'failed', 'transferred'];\nconst intents = ['new_patient_inquiry','existing_patient','appointment_booking','appointment_reschedule','emergency','billing_insurance','general_question','other'];\nconst outcomes = ['booked','callback_requested','information_provided','transferred_to_staff','voicemail','no_action','lost'];\nif (!body.organization_id) errors.push('organization_id is required.');\nif (!body.direction || !directions.includes(String(body.direction))) errors.push('direction must be inbound or outbound.');\nif (!body.caller_name || !String(body.caller_name).trim()) errors.push('caller_name is required.');\nconst digits = String(body.phone || '').replace(/[^0-9]/g, '');\nif (digits.length < 7) errors.push('phone must include at least 7 digits.');\nif (body.status && !statuses.includes(String(body.status))) errors.push('status is not a known call status.');\nif (body.intent && !intents.includes(String(body.intent))) errors.push('intent is not a known call intent.');\nif (body.outcome && !outcomes.includes(String(body.outcome))) errors.push('outcome is not a known call outcome.');\nreturn [{ json: { ...body, _valid: errors.length === 0, _errors: errors } }];"
+      }
+    },
+    {
+      "id": "validation_passed",
+      "name": "Validation Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-760, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json._valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_invalid",
+      "name": "Respond: Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-540, 200],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._errors.join(' ') } }}",
+        "options": { "responseCode": 400 }
+      }
+    },
+    {
+      "id": "normalize",
+      "name": "Normalize Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-540, -80],
+      "parameters": {
+        "jsCode": "function normalizePhone(raw) {\n  const trimmed = String(raw).trim();\n  const hasPlus = trimmed.startsWith('+');\n  const digits = trimmed.replace(/[^0-9]/g, '');\n  return hasPlus ? `+${digits}` : digits;\n}\nfunction capitalize(v) {\n  return String(v).trim().split(/\\s+/).filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');\n}\nconst b = $input.first().json;\nconst status = b.status || 'completed';\nconst noDuration = status === 'missed' || status === 'failed';\nconst name = capitalize(b.caller_name);\nconst parts = name.split(/\\s+/);\nreturn [{ json: {\n  organization_id: b.organization_id,\n  direction: String(b.direction).trim().toLowerCase(),\n  caller_name: name,\n  first_name: parts[0],\n  last_name: parts.slice(1).join(' '),\n  phone: normalizePhone(b.phone),\n  status,\n  intent: b.intent || null,\n  outcome: noDuration ? null : (b.outcome || null),\n  duration_seconds: noDuration ? 0 : Math.round(Number(b.duration_seconds) || 0),\n  started_at: b.started_at || new Date().toISOString(),\n  notes: b.notes ? String(b.notes).trim() : null,\n  ai_handled: b.ai_handled === true || b.ai_handled === 'true',\n  transcript: b.transcript && Array.isArray(b.transcript.lines) ? b.transcript : null\n} }];"
+      }
+    },
+    {
+      "id": "find_patient",
+      "name": "Find Patient",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-320, -80],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/patients",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "=eq.{{ $json.organization_id }}" },
+            { "name": "phone", "value": "=eq.{{ $json.phone }}" },
+            { "name": "select", "value": "id" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "prepare_patient",
+      "name": "Prepare Patient",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-100, -80],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nconst normalized = $('Normalize Call').item.json;\nreturn [{ json: { ...normalized, patient_id: matches[0]?.id ?? null, found: Boolean(matches[0]) } }];"
+      }
+    },
+    {
+      "id": "patient_found",
+      "name": "Patient Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [120, -80],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.found }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "create_patient",
+      "name": "Create Patient",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [340, 80],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/patients",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $json.organization_id }}" },
+            { "name": "first_name", "value": "={{ $json.first_name }}" },
+            { "name": "last_name", "value": "={{ $json.last_name }}" },
+            { "name": "phone", "value": "={{ $json.phone }}" },
+            { "name": "patient_type", "value": "new" },
+            { "name": "lead_source", "value": "={{ $json.direction === 'inbound' ? 'inbound_call' : 'outbound_call' }}" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "use_new_patient",
+      "name": "Use New Patient",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 80],
+      "parameters": {
+        "jsCode": "const created = ($json.body ?? [])[0];\nconst normalized = $('Prepare Patient').item.json;\nreturn [{ json: { ...normalized, patient_id: created.id, found: true } }];"
+      }
+    },
+    {
+      "id": "create_call",
+      "name": "Create Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, -40],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/calls",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ organization_id: $json.organization_id, patient_id: $json.patient_id, direction: $json.direction, status: $json.status, phone_number: $json.phone, started_at: $json.started_at, duration_seconds: $json.duration_seconds, intent: $json.intent, outcome: $json.outcome, ai_handled: $json.ai_handled === true, ai_summary: $json.notes, transcript: $json.transcript || null }) }}",
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "log_event",
+      "name": "Log call event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, -40],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $json.body[0].organization_id }}" },
+            { "name": "event_type", "value": "={{ ($json.body[0].status === 'missed' || $json.body[0].status === 'failed') ? 'call.missed' : 'call.completed' }}" },
+            { "name": "entity_type", "value": "call" },
+            { "name": "entity_id", "value": "={{ $json.body[0].id }}" },
+            { "name": "status", "value": "completed" },
+            { "name": "payload", "value": "={{ { patient_name: $('Normalize Call').item.json.caller_name, direction: $json.body[0].direction, phone_number: $json.body[0].phone_number, status: $json.body[0].status, call_id: $json.body[0].id } }}" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "respond_success",
+      "name": "Respond: Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1220, -40],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, call_id: $json.body[0].entity_id, message: 'Call received.' } }}",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Call Intake": { "main": [[{ "node": "Validate Request", "type": "main", "index": 0 }]] },
+    "Validate Request": { "main": [[{ "node": "Validation Passed?", "type": "main", "index": 0 }]] },
+    "Validation Passed?": {
+      "main": [
+        [{ "node": "Normalize Call", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Invalid", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize Call": { "main": [[{ "node": "Find Patient", "type": "main", "index": 0 }]] },
+    "Find Patient": { "main": [[{ "node": "Prepare Patient", "type": "main", "index": 0 }]] },
+    "Prepare Patient": { "main": [[{ "node": "Patient Found?", "type": "main", "index": 0 }]] },
+    "Patient Found?": {
+      "main": [
+        [{ "node": "Create Call", "type": "main", "index": 0 }],
+        [{ "node": "Create Patient", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Patient": { "main": [[{ "node": "Use New Patient", "type": "main", "index": 0 }]] },
+    "Use New Patient": { "main": [[{ "node": "Create Call", "type": "main", "index": 0 }]] },
+    "Create Call": { "main": [[{ "node": "Log call event", "type": "main", "index": 0 }]] },
+    "Log call event": { "main": [[{ "node": "Respond: Success", "type": "main", "index": 0 }]] }
+  }
+}

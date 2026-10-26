@@ -1,0 +1,910 @@
+{
+  "name": "Knowledge — Index Document",
+  "meta": {
+    "description": "Downloads a clinic file from Supabase Storage, extracts the text, embeds the passages with OpenAI text-embedding-3-small, and writes document_chunks. DentalFlow only stores the file and asks for this webhook."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: Knowledge Index",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1400,
+        0
+      ],
+      "parameters": {
+        "path": "knowledge-index",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1180,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body ?? $input.first().json;\nconst uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst documentId = String(body.document_id || '');\nconst errors = [];\nif (!uuid.test(documentId)) errors.push('document_id is required.');\nreturn [{ json: { document_id: documentId, _valid: errors.length === 0, _errors: errors } }];"
+      }
+    },
+    {
+      "id": "validation_passed",
+      "name": "Validation Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_invalid",
+      "name": "Respond: Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -740,
+        220
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._errors.join(' ') } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "get_document",
+      "name": "Get Document",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -740,
+        -40
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/documents",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{ $json.document_id }}"
+            },
+            {
+              "name": "select",
+              "value": "id,organization_id,storage_path,file_name,file_type,status"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "load_document",
+      "name": "Load Document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst row = Array.isArray(body) ? body[0] : null;\nif (!row || !row.id || !row.storage_path) {\n  return [{ json: { _found: false, _error: 'Document was not found.' } }];\n}\nif (!['pdf', 'docx', 'txt', 'csv'].includes(row.file_type)) {\n  return [{ json: { _found: false, _error: 'This file type cannot be indexed.' } }];\n}\nreturn [{ json: { ...row, _found: true } }];"
+      }
+    },
+    {
+      "id": "document_found",
+      "name": "Document Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_missing",
+      "name": "Respond: Missing",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        180
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._error } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "download_file",
+      "name": "Download File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        -120
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://lngkdzbhhxlnxweottie.supabase.co/storage/v1/object/knowledge-documents/' + encodeURI($json.storage_path) }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "attach_file",
+      "name": "Attach File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "const doc = $('Load Document').first().json;\nreturn [{ json: { id: doc.id, organization_id: doc.organization_id, file_type: doc.file_type, storage_path: doc.storage_path }, binary: $input.first().binary }];"
+      }
+    },
+    {
+      "id": "read_file_text",
+      "name": "Read File Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst doc = { id: item.json.id, organization_id: item.json.organization_id, file_type: item.json.file_type };\n\nfunction extractDocx(buffer) {\n  let inflateRawSync;\n  try {\n    inflateRawSync = require('zlib').inflateRawSync;\n  } catch (error) {\n    throw new Error('n8n could not read this Word file. Upload a PDF or text file instead.');\n  }\n  const data = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);\n  const eocd = data.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));\n  if (eocd < 0) throw new Error('This Word file could not be opened.');\n  const count = data.readUInt16LE(eocd + 10);\n  let cursor = data.readUInt32LE(eocd + 16);\n  for (let i = 0; i < count; i++) {\n    if (cursor + 46 > data.length || data.readUInt32LE(cursor) !== 0x02014b50) break;\n    const method = data.readUInt16LE(cursor + 10);\n    const compSize = data.readUInt32LE(cursor + 20);\n    const nameLen = data.readUInt16LE(cursor + 28);\n    const extraLen = data.readUInt16LE(cursor + 30);\n    const commentLen = data.readUInt16LE(cursor + 32);\n    const localOffset = data.readUInt32LE(cursor + 42);\n    const name = data.slice(cursor + 46, cursor + 46 + nameLen).toString('utf8');\n    cursor += 46 + nameLen + extraLen + commentLen;\n    if (name !== 'word/document.xml') continue;\n    const localNameLen = data.readUInt16LE(localOffset + 26);\n    const localExtraLen = data.readUInt16LE(localOffset + 28);\n    const start = localOffset + 30 + localNameLen + localExtraLen;\n    const compressed = data.slice(start, start + compSize);\n    const xml = method === 0 ? compressed.toString('utf8') : inflateRawSync(compressed).toString('utf8');\n    return xml\n      .replace(/<w:tab\\/>/g, '\\t')\n      .replace(/<w:br\\/>/g, '\\n')\n      .replace(/<\\/w:p>/g, '\\n')\n      .replace(/<[^>]+>/g, '')\n      .replace(/&amp;/g, '&')\n      .replace(/&lt;/g, '<')\n      .replace(/&gt;/g, '>')\n      .replace(/&quot;/g, '\"')\n      .replace(/&#39;|&apos;/g, \"'\")\n      .trim();\n  }\n  throw new Error('This Word file has no readable text.');\n}\n\nif (doc.file_type === 'pdf') {\n  return [{ json: { ...doc, _needsPdf: true }, binary: item.binary }];\n}\n\ntry {\n  const buf = await this.helpers.getBinaryDataBuffer(0, 'data');\n  const text = doc.file_type === 'docx' ? extractDocx(buf) : buf.toString('utf8');\n  return [{ json: { ...doc, text, _needsPdf: false } }];\n} catch (error) {\n  return [{ json: { ...doc, text: '', _needsPdf: false, _read_error: error.message } }];\n}"
+      }
+    },
+    {
+      "id": "needs_pdf",
+      "name": "PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        580,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._needsPdf }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "extract_pdf",
+      "name": "Extract PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        800,
+        -240
+      ],
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "normalize_pdf",
+      "name": "Normalize PDF Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        -240
+      ],
+      "parameters": {
+        "jsCode": "const doc = $('Read File Text').first().json;\nconst text = String($json.text ?? $json.data ?? $json.content ?? '').trim();\nreturn [{ json: { id: doc.id, organization_id: doc.organization_id, text, _read_error: text ? undefined : 'No text could be read from this PDF.' } }];"
+      }
+    },
+    {
+      "id": "chunk_text",
+      "name": "Chunk Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Keep this in step with src/lib/knowledge/chunk-text.ts.\nfunction chunkText(input) {\n  const size = 700;\n  const overlap = 80;\n  const maxChunks = 120;\n  const text = String(input || '').replace(/\\r\\n/g, '\\n').replace(/[ \\t]+\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();\n  if (!text) return [];\n  const chunks = [];\n  let start = 0;\n  while (start < text.length && chunks.length < maxChunks) {\n    let end = Math.min(text.length, start + size);\n    if (end < text.length) {\n      const lineBreak = text.lastIndexOf('\\n', end);\n      const space = text.lastIndexOf(' ', end);\n      const breakAt = lineBreak > start + size * 0.5 ? lineBreak : space;\n      if (breakAt > start + size * 0.5) end = breakAt;\n    }\n    const piece = text.slice(start, end).trim();\n    if (piece) chunks.push(piece);\n    if (end >= text.length) break;\n    start = Math.max(end - overlap, start + 1);\n  }\n  return chunks;\n}\n\nconst source = $input.first().json;\nconst base = { id: source.id, organization_id: source.organization_id };\nif (source._read_error) {\n  return [{ json: { ...base, chunks: [], _has_chunks: false, _error: source._read_error } }];\n}\nconst chunks = chunkText(source.text);\nif (!chunks.length) {\n  return [{ json: { ...base, chunks, _has_chunks: false, _error: 'No text could be read from this file.' } }];\n}\nreturn [{ json: { ...base, chunks, _has_chunks: true } }];"
+      }
+    },
+    {
+      "id": "has_passages",
+      "name": "Has Passages?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._has_chunks }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "note_failure",
+      "name": "Note Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        40
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { id: $('Load Document').first().json.id, _error: $json._error || 'Indexing failed.' } }];"
+      }
+    },
+    {
+      "id": "mark_failed",
+      "name": "Mark Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1900,
+        40
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/documents",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{ $json.id }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'failed', chunk_count: 0, error_message: $json._error }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "respond_failed",
+      "name": "Respond: Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2120,
+        40
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $('Note Failure').item.json._error } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "embed_passages",
+      "name": "Embed Passages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        -220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'text-embedding-3-small', input: $json.chunks }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-api",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "id": "build_rows",
+      "name": "Build Chunk Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        -220
+      ],
+      "parameters": {
+        "jsCode": "const doc = $('Chunk Text').first().json;\nconst chunks = doc.chunks || [];\nconst vectors = Array.isArray($json.data) ? $json.data : null;\nif (!vectors || vectors.length !== chunks.length) {\n  const message = ($json.error && $json.error.message) || 'The embedding service did not return one vector per passage.';\n  return [{ json: { _ok: false, _error: message } }];\n}\nconst rows = [];\nfor (let index = 0; index < chunks.length; index++) {\n  const vector = vectors.find((item) => item.index === index) || vectors[index];\n  if (!vector || !Array.isArray(vector.embedding) || vector.embedding.length !== 1536) {\n    return [{ json: { _ok: false, _error: 'The embedding service returned a vector of the wrong size.' } }];\n  }\n  rows.push({\n    organization_id: doc.organization_id,\n    document_id: doc.id,\n    content: chunks[index],\n    chunk_index: index,\n    embedding: '[' + vector.embedding.join(',') + ']'\n  });\n}\nreturn [{ json: { _ok: true, rows, chunk_count: rows.length } }];"
+      }
+    },
+    {
+      "id": "embeddings_ready",
+      "name": "Embeddings Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2120,
+        -220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "delete_old_chunks",
+      "name": "Delete Old Chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2340,
+        -300
+      ],
+      "parameters": {
+        "method": "DELETE",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/document_chunks",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "document_id",
+              "value": "=eq.{{ $('Chunk Text').item.json.id }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "insert_chunks",
+      "name": "Insert Chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2560,
+        -300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/document_chunks",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Build Chunk Rows').item.json.rows) }}",
+        "options": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "mark_indexed",
+      "name": "Mark Indexed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2780,
+        -300
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/documents",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{ $('Chunk Text').item.json.id }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'indexed', chunk_count: $('Build Chunk Rows').item.json.chunk_count, error_message: null }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "respond_indexed",
+      "name": "Respond: Indexed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        3000,
+        -300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, document_id: $('Chunk Text').item.json.id, chunk_count: $('Build Chunk Rows').item.json.chunk_count } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Knowledge Index": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Validation Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Passed?": {
+      "main": [
+        [
+          {
+            "node": "Get Document",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Document": {
+      "main": [
+        [
+          {
+            "node": "Load Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Document": {
+      "main": [
+        [
+          {
+            "node": "Document Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Document Found?": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Attach File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach File": {
+      "main": [
+        [
+          {
+            "node": "Read File Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read File Text": {
+      "main": [
+        [
+          {
+            "node": "PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF?": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Chunk Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF": {
+      "main": [
+        [
+          {
+            "node": "Normalize PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Chunk Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk Text": {
+      "main": [
+        [
+          {
+            "node": "Has Passages?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Passages?": {
+      "main": [
+        [
+          {
+            "node": "Embed Passages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Note Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Note Failure": {
+      "main": [
+        [
+          {
+            "node": "Mark Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Failed": {
+      "main": [
+        [
+          {
+            "node": "Respond: Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Passages": {
+      "main": [
+        [
+          {
+            "node": "Build Chunk Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Chunk Rows": {
+      "main": [
+        [
+          {
+            "node": "Embeddings Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Ready?": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Note Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Chunks": {
+      "main": [
+        [
+          {
+            "node": "Insert Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Chunks": {
+      "main": [
+        [
+          {
+            "node": "Mark Indexed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Indexed": {
+      "main": [
+        [
+          {
+            "node": "Respond: Indexed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

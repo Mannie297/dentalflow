@@ -1,0 +1,269 @@
+{
+  "name": "AI — Lead Qualification",
+  "meta": {
+    "description": "Reusable sub-workflow. Given { lead_id, organization_id }, loads the lead + the org's (or global) 'lead_score' prompt template, calls the AI model, validates the structured JSON response, applies controlled business rules, updates the lead in Supabase, and logs a lead.qualified (or failed) automation event. See /docs/N8N_WORKFLOWS.md."
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "When Called by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-1200, 0],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "lead_id", "type": "string" },
+            { "name": "organization_id", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "get_lead",
+      "name": "Get Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-980, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/leads",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [{ "name": "id", "value": "=eq.{{ $json.lead_id }}" }] },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "get_prompt_template",
+      "name": "Get Prompt Template (org or global)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-760, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/prompt_templates",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "name", "value": "eq.lead_score" },
+            { "name": "active", "value": "eq.true" },
+            { "name": "or", "value": "=(organization_id.eq.{{ $('When Called by Another Workflow').item.json.organization_id }},organization_id.is.null)" },
+            { "name": "order", "value": "organization_id.desc.nullslast,version.desc" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "build_prompt",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-540, 0],
+      "parameters": {
+        "jsCode": "const lead = ($('Get Lead').item.json.body ?? [])[0];\nconst template = ($('Get Prompt Template (org or global)').item.json.body ?? [])[0];\nif (!lead) throw new Error('Lead not found for id ' + $('When Called by Another Workflow').item.json.lead_id);\nif (!template) throw new Error('No active lead_score prompt template found (org-specific or global).');\n\nfunction fill(str, vars) {\n  return String(str ?? '').replace(/\\{\\{(\\w+)\\}\\}/g, (_, key) => (vars[key] ?? ''));\n}\n\nconst vars = {\n  first_name: lead.first_name ?? '',\n  last_name: lead.last_name ?? '',\n  phone: lead.phone ?? '',\n  email: lead.email ?? '',\n  source: lead.source ?? '',\n  service_requested: lead.service_requested ?? '',\n  message: lead.message ?? ''\n};\n\nreturn [{\n  json: {\n    lead,\n    model: template.model,\n    temperature: Number(template.temperature),\n    system_prompt: template.system_prompt,\n    user_prompt: fill(template.user_prompt, vars)\n  }\n}];"
+      }
+    },
+    {
+      "id": "call_ai_model",
+      "name": "Call AI Model (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-320, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, temperature: $json.temperature, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $json.system_prompt }, { role: 'user', content: $json.user_prompt } ] }) }}",
+        "options": {}
+      },
+      "credentials": { "openAiApi": { "id": "openai-api", "name": "OpenAI" } }
+    },
+    {
+      "id": "validate_ai_json",
+      "name": "Validate Structured JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-100, 0],
+      "parameters": {
+        "jsCode": "const raw = $json.choices?.[0]?.message?.content ?? '';\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  return [{ json: { _valid: false, _error: 'AI response was not valid JSON: ' + e.message, _raw: raw } }];\n}\n\nconst errors = [];\nconst isNum = (v) => typeof v === 'number' && !Number.isNaN(v);\nif (!isNum(parsed.score) || parsed.score < 0 || parsed.score > 100) errors.push('score must be a number 0-100.');\nif (!['low','medium','high'].includes(parsed.priority)) errors.push('priority must be low|medium|high.');\nif (typeof parsed.service !== 'string') errors.push('service must be a string.');\nif (!['appointment','pricing_question','general_question','emergency','other'].includes(parsed.intent)) errors.push('invalid intent.');\nif (!['low','normal','high'].includes(parsed.urgency)) errors.push('invalid urgency.');\nif (!isNum(parsed.estimated_value) || parsed.estimated_value < 0) errors.push('estimated_value must be a non-negative number.');\nif (typeof parsed.recommended_action !== 'string' || !parsed.recommended_action.trim()) errors.push('recommended_action is required.');\nif (typeof parsed.summary !== 'string' || !parsed.summary.trim()) errors.push('summary is required.');\n\nif (errors.length > 0) {\n  return [{ json: { _valid: false, _error: errors.join(' '), _raw: raw } }];\n}\n\nreturn [{ json: { _valid: true, ai: parsed } }];"
+      }
+    },
+    {
+      "id": "ai_json_valid",
+      "name": "AI JSON Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [120, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json._valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "apply_business_rules",
+      "name": "Apply Business Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [340, -140],
+      "parameters": {
+        "jsCode": "// The AI only RECOMMENDS a score/priority. Business rules (not the model) decide the\n// authoritative `priority` written to the lead -- this keeps AI output advisory, not in\n// direct uncontrolled control of business-critical fields. See /docs/N8N_WORKFLOWS.md Phase 11.\nconst ai = $json.ai;\nlet priority = ai.priority;\nif (ai.score >= 80) priority = 'high';\nelse if (ai.score >= 50) priority = 'medium';\nelse priority = 'low';\n\nreturn [{ json: { ...($input.first().json), priority } }];"
+      }
+    },
+    {
+      "id": "update_lead_with_ai",
+      "name": "Update Lead with AI Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, -140],
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/leads",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [{ "name": "id", "value": "=eq.{{ $('When Called by Another Workflow').item.json.lead_id }}" }] },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Prefer", "value": "return=representation" }]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "ai_score", "value": "={{ $json.ai.score }}" },
+            { "name": "ai_priority", "value": "={{ $json.ai.priority }}" },
+            { "name": "ai_summary", "value": "={{ $json.ai.summary }}" },
+            { "name": "ai_recommended_action", "value": "={{ $json.ai.recommended_action }}" },
+            { "name": "lead_score", "value": "={{ $json.ai.score }}" },
+            { "name": "priority", "value": "={{ $json.priority }}" },
+            { "name": "estimated_value", "value": "={{ $json.ai.estimated_value }}" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "log_qualified_event",
+      "name": "Log automation_events: lead.qualified",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, -140],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $('When Called by Another Workflow').item.json.organization_id }}" },
+            { "name": "event_type", "value": "lead.qualified" },
+            { "name": "entity_type", "value": "lead" },
+            { "name": "entity_id", "value": "={{ $('When Called by Another Workflow').item.json.lead_id }}" },
+            { "name": "payload", "value": "={{ $json.body[0] }}" },
+            { "name": "status", "value": "completed" }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "log_failure",
+      "name": "Log automation_logs: failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [340, 160],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_logs",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $('When Called by Another Workflow').item.json.organization_id }}" },
+            { "name": "workflow_name", "value": "AI — Lead Qualification" },
+            { "name": "execution_id", "value": "={{ $execution.id }}" },
+            { "name": "event_type", "value": "lead.qualified" },
+            { "name": "status", "value": "failed" },
+            { "name": "message", "value": "={{ $json._error }}" },
+            { "name": "payload", "value": "={{ { lead_id: $('When Called by Another Workflow').item.json.lead_id, raw: $json._raw } }}" }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "return_success",
+      "name": "Return Result: Success",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1000, -140],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "success", "type": "boolean", "value": true },
+            { "name": "lead_id", "type": "string", "value": "={{ $('When Called by Another Workflow').item.json.lead_id }}" },
+            { "name": "ai", "type": "object", "value": "={{ $('Apply Business Rules').item.json.ai }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "return_failure",
+      "name": "Return Result: Failure",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [560, 160],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "success", "type": "boolean", "value": false },
+            { "name": "lead_id", "type": "string", "value": "={{ $('When Called by Another Workflow').item.json.lead_id }}" },
+            { "name": "error", "type": "string", "value": "={{ $('Validate Structured JSON').item.json._error }}" }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Called by Another Workflow": { "main": [[{ "node": "Get Lead", "type": "main", "index": 0 }]] },
+    "Get Lead": { "main": [[{ "node": "Get Prompt Template (org or global)", "type": "main", "index": 0 }]] },
+    "Get Prompt Template (org or global)": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
+    "Build Prompt": { "main": [[{ "node": "Call AI Model (OpenAI)", "type": "main", "index": 0 }]] },
+    "Call AI Model (OpenAI)": { "main": [[{ "node": "Validate Structured JSON", "type": "main", "index": 0 }]] },
+    "Validate Structured JSON": { "main": [[{ "node": "AI JSON Valid?", "type": "main", "index": 0 }]] },
+    "AI JSON Valid?": {
+      "main": [
+        [{ "node": "Apply Business Rules", "type": "main", "index": 0 }],
+        [{ "node": "Log automation_logs: failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Apply Business Rules": { "main": [[{ "node": "Update Lead with AI Results", "type": "main", "index": 0 }]] },
+    "Update Lead with AI Results": { "main": [[{ "node": "Log automation_events: lead.qualified", "type": "main", "index": 0 }]] },
+    "Log automation_events: lead.qualified": { "main": [[{ "node": "Return Result: Success", "type": "main", "index": 0 }]] },
+    "Log automation_logs: failure": { "main": [[{ "node": "Return Result: Failure", "type": "main", "index": 0 }]] }
+  }
+}

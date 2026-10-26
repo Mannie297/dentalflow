@@ -1,0 +1,186 @@
+{
+  "name": "Campaign Call Dispatcher",
+  "meta": {
+    "description": "Every minute, dials the next due campaign call through ElevenLabs — Outbound Call. Import and activate this so scheduled calls go out while DentalFlow is closed."
+  },
+  "nodes": [
+    {
+      "id": "every_minute",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-900, 0],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 1 }]
+        }
+      }
+    },
+    {
+      "id": "get_pending",
+      "name": "Get pending calls",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-660, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "event_type", "value": "eq.campaign.call_scheduled" },
+            { "name": "status", "value": "eq.pending" },
+            { "name": "select", "value": "id,entity_id,organization_id,payload" },
+            { "name": "order", "value": "created_at.asc" },
+            { "name": "limit", "value": "200" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "pick_due",
+      "name": "Pick the next due call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-420, 0],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? [];\nconst rows = Array.isArray(body) ? body : [];\nconst now = Date.now();\nconst due = rows.filter((row) => row.payload && row.payload.scheduled_at && new Date(row.payload.scheduled_at).getTime() <= now);\ndue.sort((a, b) => new Date(a.payload.scheduled_at) - new Date(b.payload.scheduled_at));\nconst seen = new Set();\nlet picked = null;\nfor (const row of due) {\n  if (seen.has(row.entity_id)) continue;\n  seen.add(row.entity_id);\n  picked = row;\n  break;\n}\nif (!picked) return [];\nreturn [{ json: { id: picked.id, campaign_id: picked.entity_id, patient_name: picked.payload.patient_name, phone: picked.payload.phone, reason: picked.payload.reason, scheduled_at: picked.payload.scheduled_at, payload: picked.payload } }];"
+      }
+    },
+    {
+      "id": "get_campaign",
+      "name": "Get campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-180, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/campaigns?id=eq.{{ $json.campaign_id }}&select=id,status,calls_count,started_at",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "campaign_ready",
+      "name": "Campaign can dial?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [40, 0],
+      "parameters": {
+        "jsCode": "const call = $('Pick the next due call').item.json;\nconst body = $json.body ?? [];\nconst campaign = Array.isArray(body) ? body[0] : null;\nconst open = campaign && (campaign.status === 'scheduled' || campaign.status === 'active');\nif (!open) return [];\nreturn [{ json: { ...call, calls_count: campaign.calls_count || 0, started_at: campaign.started_at || null } }];"
+      }
+    },
+    {
+      "id": "claim",
+      "name": "Claim call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 0],
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events?id=eq.{{ $json.id }}&status=eq.pending",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'processing', processed_at: new Date().toISOString() }) }}",
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "claimed",
+      "name": "Claimed?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 0],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? [];\nconst claimed = Array.isArray(body) && body.length > 0;\nif (!claimed) return [];\nreturn [{ json: $('Campaign can dial?').item.json }];"
+      }
+    },
+    {
+      "id": "place_call",
+      "name": "Place outbound call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "https://mannie333.app.n8n.cloud/webhook/outbound-call",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ patient_name: $json.patient_name, phone: $json.phone, reason: $json.reason }) }}",
+        "options": { "timeout": 60000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "save_result",
+      "name": "Save result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 0],
+      "parameters": {
+        "jsCode": "const call = $('Claimed?').item.json;\nlet body = $json.body !== undefined ? $json.body : $json;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = { success: false, error: body }; } }\nconst success = body && body.success === true;\nconst finishedAt = new Date().toISOString();\nreturn [{ json: {\n  id: call.id,\n  campaign_id: call.campaign_id,\n  success,\n  calls_count: (call.calls_count || 0) + (success ? 1 : 0),\n  started_at: call.started_at || finishedAt,\n  event: {\n    status: success ? 'completed' : 'failed',\n    processed_at: finishedAt,\n    payload: { ...call.payload, last_error: success ? null : (body && (body.error || body.message)) || 'The call did not start.', cancelled: false }\n  },\n  campaign: success ? { status: 'active', calls_count: (call.calls_count || 0) + 1, started_at: call.started_at || finishedAt } : null\n} }];"
+      }
+    },
+    {
+      "id": "update_event",
+      "name": "Update call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 0],
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events?id=eq.{{ $json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=minimal" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.event) }}",
+        "options": {}
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "update_campaign",
+      "name": "Update campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 0],
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/campaigns?id=eq.{{ $('Save result').item.json.campaign_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Save result').item.json.campaign || { calls_count: $('Save result').item.json.calls_count }) }}",
+        "options": {}
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    }
+  ],
+  "connections": {
+    "Every minute": { "main": [[{ "node": "Get pending calls", "type": "main", "index": 0 }]] },
+    "Get pending calls": { "main": [[{ "node": "Pick the next due call", "type": "main", "index": 0 }]] },
+    "Pick the next due call": { "main": [[{ "node": "Get campaign", "type": "main", "index": 0 }]] },
+    "Get campaign": { "main": [[{ "node": "Campaign can dial?", "type": "main", "index": 0 }]] },
+    "Campaign can dial?": { "main": [[{ "node": "Claim call", "type": "main", "index": 0 }]] },
+    "Claim call": { "main": [[{ "node": "Claimed?", "type": "main", "index": 0 }]] },
+    "Claimed?": { "main": [[{ "node": "Place outbound call", "type": "main", "index": 0 }]] },
+    "Place outbound call": { "main": [[{ "node": "Save result", "type": "main", "index": 0 }]] },
+    "Save result": { "main": [[{ "node": "Update call", "type": "main", "index": 0 }]] },
+    "Update call": { "main": [[{ "node": "Update campaign", "type": "main", "index": 0 }]] }
+  }
+}

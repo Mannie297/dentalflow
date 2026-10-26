@@ -1,0 +1,256 @@
+{
+  "name": "Missed Call Recovery",
+  "meta": {
+    "description": "Every minute, queues one AI voice callback for each inbound missed call from the last 24 hours. The Campaign Call Dispatcher places the call. SMS and email are not sent."
+  },
+  "nodes": [
+    {
+      "id": "every_minute",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1100, 0],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 1 }]
+        }
+      }
+    },
+    {
+      "id": "find_missed",
+      "name": "Find missed calls",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-860, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/calls",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "eq.11111111-1111-1111-1111-111111111111" },
+            { "name": "direction", "value": "eq.inbound" },
+            { "name": "status", "value": "eq.missed" },
+            { "name": "recovered_from_missed", "value": "eq.false" },
+            { "name": "started_at", "value": "={{ 'gte.' + $now.minus({ hours: 24 }).toISO() }}" },
+            { "name": "select", "value": "id,phone_number,patients(first_name,last_name)" },
+            { "name": "order", "value": "started_at.asc" },
+            { "name": "limit", "value": "50" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "missed_waiting",
+      "name": "Missed calls waiting",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-620, 0],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? [];\nconst rows = Array.isArray(body) ? body : [];\nconst calls = [];\nfor (const row of rows) {\n  const phone = String(row.phone_number || '');\n  if (phone.replace(/\\D/g, '').length < 10) continue;\n  const person = row.patients || {};\n  const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Caller';\n  calls.push({ id: row.id, phone, patient_name: name });\n}\nif (calls.length === 0) return [];\nreturn [{ json: { calls } }];"
+      }
+    },
+    {
+      "id": "find_campaign",
+      "name": "Find recovery campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-380, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/campaigns",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "type", "value": "eq.missed_call_recovery" },
+            { "name": "select", "value": "id,organization_id,status,contacts_count" },
+            { "name": "order", "value": "created_at.asc" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "prepare_campaign",
+      "name": "Prepare campaign",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-140, 0],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? [];\nconst row = Array.isArray(body) ? body[0] : null;\nif (row && row.status === 'paused') return [];\nif (!row) return [{ json: { create: true, organization_id: '11111111-1111-1111-1111-111111111111', contacts_count: 0 } }];\nreturn [{ json: { create: false, id: row.id, organization_id: row.organization_id, contacts_count: row.contacts_count || 0 } }];"
+      }
+    },
+    {
+      "id": "needs_creating",
+      "name": "Needs creating?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [100, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.create }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "create_campaign",
+      "name": "Create campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [340, -120],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/campaigns",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ organization_id: $json.organization_id, name: 'Missed Call Recovery', type: 'missed_call_recovery', status: 'active', channels: ['ai_voice'], audience_description: 'Inbound callers who were not answered', contacts_count: 0, calls_count: 0, ai_script: 'You are calling back someone who tried to reach Maple Grove Dental Clinic and did not get through. Ask how you can help and offer to book an appointment. Do not diagnose, prescribe, or promise a price.', started_at: new Date().toISOString() }) }}",
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "read_created",
+      "name": "Read created campaign",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [580, -120],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? [];\nconst row = Array.isArray(body) ? body[0] : null;\nif (!row || !row.id) return [];\nreturn [{ json: { id: row.id, organization_id: row.organization_id, contacts_count: row.contacts_count || 0 } }];"
+      }
+    },
+    {
+      "id": "use_existing",
+      "name": "Use existing campaign",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [340, 140],
+      "parameters": {
+        "jsCode": "return [{ json: { id: $json.id, organization_id: $json.organization_id, contacts_count: $json.contacts_count || 0 } }];"
+      }
+    },
+    {
+      "id": "campaign_ready",
+      "name": "Campaign ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [820, 0],
+      "parameters": {
+        "jsCode": "return [{ json: $json }];"
+      }
+    },
+    {
+      "id": "list_events",
+      "name": "List recovery dials",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1060, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "event_type", "value": "eq.campaign.call_scheduled" },
+            { "name": "entity_id", "value": "={{ 'eq.' + $json.id }}" },
+            { "name": "select", "value": "payload" },
+            { "name": "limit", "value": "500" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "build_rows",
+      "name": "Build callback rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 0],
+      "parameters": {
+        "jsCode": "const campaign = $('Campaign ready').item.json;\nconst calls = $('Missed calls waiting').item.json.calls || [];\nconst body = $json.body ?? [];\nconst events = Array.isArray(body) ? body : [];\nconst taken = new Set();\nfor (const event of events) {\n  const id = event.payload && event.payload.missed_call_id;\n  if (typeof id === 'string') taken.add(id);\n}\nconst due = new Date(Date.now() + 5 * 60 * 1000).toISOString();\nconst reason = 'You are calling back someone who tried to reach Maple Grove Dental Clinic and did not get through. Ask how you can help and offer to book an appointment. Do not diagnose, prescribe, or promise a price.';\nconst rows = [];\nfor (const call of calls) {\n  if (taken.has(call.id)) continue;\n  rows.push({\n    organization_id: campaign.organization_id,\n    event_type: 'campaign.call_scheduled',\n    entity_type: 'campaign',\n    entity_id: campaign.id,\n    status: 'pending',\n    payload: { patient_name: call.patient_name, phone: call.phone, reason, scheduled_at: due, last_error: null, cancelled: false, missed_call_id: call.id }\n  });\n}\nif (rows.length === 0) return [];\nreturn [{ json: { rows, campaign_id: campaign.id, contacts_count: (campaign.contacts_count || 0) + rows.length } }];"
+      }
+    },
+    {
+      "id": "insert_rows",
+      "name": "Queue callbacks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=minimal" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {}
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "update_campaign",
+      "name": "Update campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 0],
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/campaigns?id=eq.{{ $('Build callback rows').item.json.campaign_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=minimal" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'active', contacts_count: $('Build callback rows').item.json.contacts_count }) }}",
+        "options": {}
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    }
+  ],
+  "connections": {
+    "Every minute": { "main": [[{ "node": "Find missed calls", "type": "main", "index": 0 }]] },
+    "Find missed calls": { "main": [[{ "node": "Missed calls waiting", "type": "main", "index": 0 }]] },
+    "Missed calls waiting": { "main": [[{ "node": "Find recovery campaign", "type": "main", "index": 0 }]] },
+    "Find recovery campaign": { "main": [[{ "node": "Prepare campaign", "type": "main", "index": 0 }]] },
+    "Prepare campaign": { "main": [[{ "node": "Needs creating?", "type": "main", "index": 0 }]] },
+    "Needs creating?": {
+      "main": [
+        [{ "node": "Create campaign", "type": "main", "index": 0 }],
+        [{ "node": "Use existing campaign", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create campaign": { "main": [[{ "node": "Read created campaign", "type": "main", "index": 0 }]] },
+    "Read created campaign": { "main": [[{ "node": "Campaign ready", "type": "main", "index": 0 }]] },
+    "Use existing campaign": { "main": [[{ "node": "Campaign ready", "type": "main", "index": 0 }]] },
+    "Campaign ready": { "main": [[{ "node": "List recovery dials", "type": "main", "index": 0 }]] },
+    "List recovery dials": { "main": [[{ "node": "Build callback rows", "type": "main", "index": 0 }]] },
+    "Build callback rows": { "main": [[{ "node": "Queue callbacks", "type": "main", "index": 0 }]] },
+    "Queue callbacks": { "main": [[{ "node": "Update campaign", "type": "main", "index": 0 }]] }
+  }
+}

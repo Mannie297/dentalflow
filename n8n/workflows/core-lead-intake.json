@@ -1,0 +1,266 @@
+{
+  "name": "CORE — Lead Intake",
+  "meta": {
+    "description": "Receives a new lead from the DentalFlow AI frontend (or any website form), validates + normalizes it, deduplicates against existing leads, writes it to Supabase, logs a lead.created automation event, triggers AI — Lead Qualification, and returns a structured JSON response. See /docs/N8N_WORKFLOWS.md for the full spec this implements."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: Lead Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1120, 0],
+      "parameters": {
+        "path": "lead-intake",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-900, 0],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body ?? $input.first().json;\nconst errors = [];\n\nif (!body.organization_id) errors.push('organization_id is required.');\nif (!body.first_name || !String(body.first_name).trim()) errors.push('first_name is required.');\nconst validSources = ['inbound_call','outbound_call','website','chat','referral','walk_in','campaign'];\nif (!body.source || !validSources.includes(String(body.source).toLowerCase())) {\n  errors.push(`source must be one of: ${validSources.join(', ')}.`);\n}\nconst hasPhone = Boolean(body.phone && String(body.phone).trim());\nconst hasEmail = Boolean(body.email && String(body.email).trim());\nif (!hasPhone && !hasEmail) errors.push('At least one of phone or email is required.');\n\nreturn [{ json: { ...body, _valid: errors.length === 0, _errors: errors } }];"
+      }
+    },
+    {
+      "id": "validation_passed",
+      "name": "Validation Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-680, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json._valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_invalid",
+      "name": "Respond: Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-460, 180],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._errors.join(' ') } }}",
+        "options": { "responseCode": 400 }
+      }
+    },
+    {
+      "id": "normalize",
+      "name": "Normalize Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-460, -100],
+      "parameters": {
+        "jsCode": "function normalizePhone(raw) {\n  if (!raw) return null;\n  const trimmed = String(raw).trim();\n  const hasPlus = trimmed.startsWith('+');\n  const digits = trimmed.replace(/[^0-9]/g, '');\n  return hasPlus ? `+${digits}` : digits;\n}\nfunction capitalize(v) {\n  return String(v).trim().split(/\\s+/).filter(Boolean)\n    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');\n}\n\nconst b = $input.first().json;\nreturn [{\n  json: {\n    organization_id: b.organization_id,\n    source: String(b.source).trim().toLowerCase(),\n    first_name: capitalize(b.first_name),\n    last_name: b.last_name ? capitalize(b.last_name) : null,\n    phone: normalizePhone(b.phone),\n    email: b.email ? String(b.email).trim().toLowerCase() : null,\n    service_requested: b.service_requested ? String(b.service_requested).trim() : null,\n    message: b.message ? String(b.message).trim() : null,\n    source_campaign: b.source_campaign ?? null\n  }\n}];"
+      }
+    },
+    {
+      "id": "duplicate_check",
+      "name": "Duplicate Check (Supabase)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-240, -100],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/leads",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "=eq.{{ $json.organization_id }}" },
+            { "name": "or", "value": "=(phone.eq.{{ $json.phone }},email.eq.{{ $json.email }})" },
+            { "name": "status", "value": "=not.in.(lost,completed)" },
+            { "name": "order", "value": "created_at.desc" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "normalize_duplicate_check",
+      "name": "Normalize Duplicate Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-130, -100],
+      "parameters": {
+        "jsCode": "// \"Duplicate Check\" uses fullResponse so it always emits exactly one item\n// (even when Supabase returns an empty array), avoiding the n8n gotcha where a\n// 0-row JSON array response gets auto-split into 0 items and silently kills\n// every downstream node in the chain.\nconst body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nreturn [{ json: { matches, found: matches.length > 0 } }];"
+      }
+    },
+    {
+      "id": "existing_lead_found",
+      "name": "Existing Lead Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-20, -100],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.found }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "update_lead",
+      "name": "Update Existing Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [200, -220],
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/leads",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [{ "name": "id", "value": "=eq.{{ $json.matches[0].id }}" }] },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Prefer", "value": "return=representation" }]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "message", "value": "={{ $('Normalize Lead').item.json.message }}" },
+            { "name": "service_requested", "value": "={{ $('Normalize Lead').item.json.service_requested }}" },
+            { "name": "last_contact_at", "value": "={{ $now.toISO() }}" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "create_lead",
+      "name": "Create Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [200, 20],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/leads",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Prefer", "value": "return=representation" }]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $('Normalize Lead').item.json.organization_id }}" },
+            { "name": "first_name", "value": "={{ $('Normalize Lead').item.json.first_name }}" },
+            { "name": "last_name", "value": "={{ $('Normalize Lead').item.json.last_name }}" },
+            { "name": "phone", "value": "={{ $('Normalize Lead').item.json.phone }}" },
+            { "name": "email", "value": "={{ $('Normalize Lead').item.json.email }}" },
+            { "name": "source", "value": "={{ $('Normalize Lead').item.json.source }}" },
+            { "name": "source_campaign", "value": "={{ $('Normalize Lead').item.json.source_campaign }}" },
+            { "name": "service_requested", "value": "={{ $('Normalize Lead').item.json.service_requested }}" },
+            { "name": "message", "value": "={{ $('Normalize Lead').item.json.message }}" },
+            { "name": "status", "value": "new" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "log_lead_created_event",
+      "name": "Log automation_events: lead.created",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, -100],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Prefer", "value": "return=representation" }]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $json.body[0].organization_id }}" },
+            { "name": "event_type", "value": "lead.created" },
+            { "name": "entity_type", "value": "lead" },
+            { "name": "entity_id", "value": "={{ $json.body[0].id }}" },
+            { "name": "payload", "value": "={{ $json.body[0] }}" },
+            { "name": "status", "value": "completed" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "run_ai_qualification",
+      "name": "Execute: AI — Lead Qualification",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [860, -100],
+      "parameters": {
+        "source": "database",
+        "workflowId": { "value": "AI — Lead Qualification" },
+        "workflowInputs": {
+          "value": {
+            "lead_id": "={{ $json.body[0].entity_id }}",
+            "organization_id": "={{ $json.body[0].organization_id }}"
+          }
+        },
+        "options": { "waitForSubWorkflow": true }
+      }
+    },
+    {
+      "id": "respond_success",
+      "name": "Respond: Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1080, -100],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, lead_id: $json.lead_id, status: 'created', message: 'Lead received successfully' } }}",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Lead Intake": { "main": [[{ "node": "Validate Request", "type": "main", "index": 0 }]] },
+    "Validate Request": { "main": [[{ "node": "Validation Passed?", "type": "main", "index": 0 }]] },
+    "Validation Passed?": {
+      "main": [
+        [{ "node": "Normalize Lead", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Invalid", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize Lead": { "main": [[{ "node": "Duplicate Check (Supabase)", "type": "main", "index": 0 }]] },
+    "Duplicate Check (Supabase)": { "main": [[{ "node": "Normalize Duplicate Check", "type": "main", "index": 0 }]] },
+    "Normalize Duplicate Check": { "main": [[{ "node": "Existing Lead Found?", "type": "main", "index": 0 }]] },
+    "Existing Lead Found?": {
+      "main": [
+        [{ "node": "Update Existing Lead", "type": "main", "index": 0 }],
+        [{ "node": "Create Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Existing Lead": { "main": [[{ "node": "Log automation_events: lead.created", "type": "main", "index": 0 }]] },
+    "Create Lead": { "main": [[{ "node": "Log automation_events: lead.created", "type": "main", "index": 0 }]] },
+    "Log automation_events: lead.created": { "main": [[{ "node": "Execute: AI — Lead Qualification", "type": "main", "index": 0 }]] },
+    "Execute: AI — Lead Qualification": { "main": [[{ "node": "Respond: Success", "type": "main", "index": 0 }]] }
+  }
+}

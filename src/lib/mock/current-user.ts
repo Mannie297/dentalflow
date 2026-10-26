@@ -1,0 +1,63 @@
+import type { AppUser } from "@/types";
+import { DEMO_ORGANIZATION } from "./constants";
+
+export const DEMO_USERS: AppUser[] = [
+  {
+    id: "user-owner",
+    organization_id: DEMO_ORGANIZATION.id,
+    auth_user_id: "auth-owner",
+    full_name: "Dr. Sarah Chen",
+    email: "sarah.chen@maplegrovedental.ca",
+    phone: "(905) 555-0148",
+    role: "CLINIC_OWNER",
+    title: "Clinic Owner & Lead Dentist",
+    avatar_url: null,
+    is_active: true,
+    created_at: "2024-01-15T00:00:00.000Z",
+    updated_at: "2024-01-15T00:00:00.000Z",
+  },
+  {
+    id: "user-manager",
+    organization_id: DEMO_ORGANIZATION.id,
+    auth_user_id: "auth-manager",
+    full_name: "Priya Nair",
+    email: "priya.nair@maplegrovedental.ca",
+    phone: "(905) 555-0161",
+    role: "OFFICE_MANAGER",
+    title: "Office Manager",
+    avatar_url: null,
+    is_active: true,
+    created_at: "2024-02-01T00:00:00.000Z",
+    updated_at: "2024-02-01T00:00:00.000Z",
+  },
+  {
+    id: "user-receptionist",
+    organization_id: DEMO_ORGANIZATION.id,
+    auth_user_id: "auth-receptionist",
+    full_name: "Jordan Kelly",
+    email: "jordan.kelly@maplegrovedental.ca",
+    phone: "(905) 555-0173",
+    role: "RECEPTIONIST",
+    title: "Front Desk Receptionist",
+    avatar_url: null,
+    is_active: true,
+    created_at: "2024-03-10T00:00:00.000Z",
+    updated_at: "2024-03-10T00:00:00.000Z",
+  },
+  {
+    id: "user-admin",
+    organization_id: DEMO_ORGANIZATION.id,
+    auth_user_id: "auth-admin",
+    full_name: "Alex Morgan",
+    email: "alex.morgan@dentalflow.ai",
+    phone: null,
+    role: "ADMIN",
+    title: "DentalFlow AI Administrator",
+    avatar_url: null,
+    is_active: true,
+    created_at: "2024-01-01T00:00:00.000Z",
+    updated_at: "2024-01-01T00:00:00.000Z",
+  },
+];
+
+export const DEFAULT_CURRENT_USER_ID = "user-owner";
