@@ -37,6 +37,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# supabase CLI cache
+/supabase/.temp/
+
 # local debug dumps
 /all_chunks.txt
 /fresh_src_*.js
