@@ -1,6 +1,6 @@
 # Marketing DentalFlow AI to clinics
 
-DentalFlow AI is a front-desk workspace for a dental clinic. It keeps calls, leads, and appointments in one place, calls missed callers back by voice, and shows the owner what happened.
+DentalFlow AI is a front-desk workspace for a dental clinic. It keeps calls, leads, and appointments in one place, follows up on the ones that stall, calls missed callers back by voice, and shows the owner what happened.
 
 Use this note when talking to a clinic owner or office manager. Describe only what the product does today.
 
@@ -8,7 +8,7 @@ Use this note when talking to a clinic owner or office manager. Describe only wh
 
 Independent clinics with one front desk and a few dentists. The buyer is the owner or the office manager. The daily user is the person who answers the phone.
 
-The pain to open with: callers who hang up when nobody answers, and the follow-up that never happens after a busy morning.
+The pain to open with: inquiries that go quiet. Not just the caller who hangs up — the lead nobody called back, the recall patient nobody reached, the consult that never got rebooked. Most owners cannot say how many of last month's inquiries actually became a booked visit.
 
 ## What to show
 
@@ -42,11 +42,13 @@ Then switch to Live Mode only with a staff login the clinic controls.
 
 ## How to open the conversation
 
-Lead with the missed call, not the software.
+Lead with the gap, not the software.
 
-"When the front desk is with a patient, the next caller often hangs up. DentalFlow calls that person back and keeps the inquiry on a board the owner can see."
+"Ask any owner how many of last month's inquiries turned into a booked appointment. Most can't tell you — not because they don't care, but because nobody has time to follow every lead, recall, or unbooked consult to the finish line. DentalFlow is the system that closes that gap: one board for every call, lead, and appointment, and an AI teammate that follows through on all of it, including calling back the ones who hung up."
 
-One unpaid implant consult is often worth more than a month of front-desk software. Use the clinic's own fees if they share them. Do not quote another clinic's numbers.
+Close with the call to action: "Give me 30 minutes on your front-desk computer this week, with sample data, so no real patient is touched, and I'll show you exactly how many of your own inquiries are falling through the cracks right now."
+
+One stalled implant consult or overdue recall patient is often worth more than a month of front-desk software. Use the clinic's own fees if they share them. Do not quote another clinic's numbers.
 
 ## A simple offer
 
@@ -68,7 +70,7 @@ Skip purchased lead lists and cold texting. The product itself does not text.
 
 ## Objections
 
-**We already have a receptionist.** DentalFlow covers the calls that arrive while that person is with a patient, and the callbacks they do not have time to make.
+**We already have a receptionist.** DentalFlow covers the calls that arrive while that person is with a patient, and follows up on the leads, recalls, and callbacks nobody has time to chase.
 
 **We do not want an AI talking to patients.** The clinic writes the rules, chooses who gets a callback, and can pause the recovery campaign. Staff can still log and return calls themselves.
 
