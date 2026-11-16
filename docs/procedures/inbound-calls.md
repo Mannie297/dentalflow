@@ -7,11 +7,11 @@ Three workflows do this, in order. All three must be Active.
 | Order | Workflow | Webhook |
 |---|---|---|
 | 1 | ElevenLabs — Inbound Initiation | `POST /webhook/elevenlabs-inbound` |
-| 2 | The ElevenLabs agent talks. No n8n workflow runs during the conversation. | |
+| 2 | The ElevenLabs agent talks. A booking or cancellation during the call posts to ElevenLabs — Book Appointment or ElevenLabs — Cancel Appointment. | |
 | 3 | ElevenLabs — Call Completed | `POST /webhook/elevenlabs-call` |
 | 4 | CORE — Call Intake | `POST /webhook/call-intake` |
 
-Call filing is the shared procedure in [call intake](call-intake.md). Agent fields are in `/n8n/prompts/outbound-receptionist.md`.
+Call filing is the shared procedure in [call intake](call-intake.md). Agent fields are in `/n8n/prompts/outbound-receptionist.md`. Booking and cancelling during the call are in `/n8n/prompts/appointment-tools.md`.
 
 ## How the process works
 
