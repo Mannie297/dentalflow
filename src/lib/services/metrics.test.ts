@@ -89,6 +89,7 @@ function mkAppointment(overrides: Partial<Appointment> = {}): Appointment {
     campaign_id: null,
     estimated_value: 6000,
     notes: null,
+    calendar_event_id: null,
     ...overrides,
   };
 }

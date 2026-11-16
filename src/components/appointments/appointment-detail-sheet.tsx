@@ -53,7 +53,8 @@ export function AppointmentDetailSheet({
       { id: displayAppointment.id, status },
       {
         onSuccess: () => toast.success(`${displayAppointment.patient_name}'s appointment marked ${APPOINTMENT_STATUS_LABELS[status].toLowerCase()}.`),
-        onError: () => toast.error("Couldn't update the appointment. Please try again."),
+        onError: (error) =>
+          toast.error(error instanceof Error ? error.message : "Couldn't update the appointment. Please try again."),
       }
     );
   }

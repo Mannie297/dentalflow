@@ -113,6 +113,7 @@ export default function PatientProfilePage() {
           <BookAppointmentDialog
             triggerVariant="outline"
             defaultPatientName={patient.full_name}
+            defaultPhone={patient.phone}
             defaultPatientType={patient.patient_type}
             patientId={patient.id}
             source={patient.lead_source}

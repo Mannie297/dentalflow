@@ -11,7 +11,7 @@ The example clinic in the product is Maple Grove Dental Clinic in Mississauga. D
 | Dashboard | Counts for the header date range, missed-call recovery, and business insights. **Ask AI** answers from those insights. |
 | Calls | A log of inbound and outbound calls. Staff can record a finished call. **Call back** places a live outbound call when Live Mode and the outbound webhook are set. |
 | Patients | The people attached to calls, leads, and visits. |
-| Appointments | The clinic schedule. A visit can be linked to the call that created it. Google Calendar is not connected. |
+| Appointments | The clinic schedule. A visit can be linked to the call that created it. Booking/cancelling can optionally sync to Google Calendar through n8n — see below. |
 | Leads | A board from new inquiry through booked or lost. New inquiries can be sent to n8n for scoring. |
 | Campaigns | Voice campaigns. **Schedule calls** places one call or a spreadsheet of calls at chosen times. The create-campaign wizard does not attach a dial list. |
 | AI Receptionist | The clinic's rules for the voice agent: hours, services, and what the agent may say. Saving rules here does not change the ElevenLabs agent until that agent is updated separately. |
@@ -91,6 +91,8 @@ Copy names from [.env.example](.env.example). Put real values only in `.env.loca
 | `NEXT_PUBLIC_N8N_LEAD_WEBHOOK_URL` | Browser | Sending a new lead to n8n |
 | `NEXT_PUBLIC_N8N_CALL_WEBHOOK_URL` | Browser | Optional. Logging a call through n8n |
 | `NEXT_PUBLIC_N8N_OUTBOUND_WEBHOOK_URL` | Browser | Live callbacks and scheduled calls |
+| `NEXT_PUBLIC_N8N_BOOK_APPOINTMENT_WEBHOOK_URL` | Browser | Optional. Booking an appointment through n8n, with Google Calendar sync |
+| `NEXT_PUBLIC_N8N_CANCEL_APPOINTMENT_WEBHOOK_URL` | Browser | Optional. Cancelling an appointment through n8n, with Google Calendar sync |
 | `N8N_KNOWLEDGE_INDEX_WEBHOOK_URL` | Server only | Indexing an uploaded clinic file |
 | `N8N_KNOWLEDGE_SEARCH_WEBHOOK_URL` | Server only | Answering a knowledge-base question |
 | `DENTALFLOW_WEBHOOK_SECRET` | Server only | Optional shared secret for `POST /api/events` |
@@ -101,7 +103,7 @@ Apply the SQL files in `supabase/migrations/` in order, then create the first us
 
 ## n8n
 
-n8n does the heavy work: lead scoring, call intake, outbound dialing, the campaign dispatcher, missed-call recovery, and knowledge-base indexing and search. Import the JSON files in `n8n/workflows/` and attach the existing Supabase and OpenAI credentials. The walkthrough is [n8n/README.md](n8n/README.md). Field-level contracts are in [docs/N8N_WORKFLOWS.md](docs/N8N_WORKFLOWS.md).
+n8n does the heavy work: lead scoring, call intake, outbound dialing, the campaign dispatcher, missed-call recovery, knowledge-base indexing and search, and appointment booking/cancellation with Google Calendar sync. Import the JSON files in `n8n/workflows/` and attach the existing Supabase, OpenAI, and Google Calendar credentials. The walkthrough is [n8n/README.md](n8n/README.md). Field-level contracts are in [docs/N8N_WORKFLOWS.md](docs/N8N_WORKFLOWS.md).
 
 Production webhooks answer only while the matching workflow is active.
 
@@ -119,7 +121,7 @@ Production webhooks answer only while the matching workflow is active.
 ## What this version does not do
 
 - It does not send SMS or marketing email.
-- It does not connect to Google Calendar, take payments, or request reviews.
+- It does not take payments or request reviews. It does not reschedule an appointment (cancel and re-book instead), and it does not send a calendar invite email to the patient.
 - It does not diagnose, prescribe, or invent a fee. A price in a knowledge-base answer has to appear in a document the clinic uploaded.
 - A scheduled call goes out while DentalFlow is open, or while the n8n dispatcher is active. A paused campaign is not dialed.
 

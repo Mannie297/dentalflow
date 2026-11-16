@@ -13,9 +13,10 @@ Production webhooks answer only while the matching workflow is **Active** in n8n
 | [Call intake](call-intake.md) | The post-call workflow, or a direct post | CORE — Call Intake |
 | [Knowledge base](knowledge-base.md) | An upload, re-index, or search on the Knowledge Base page | Knowledge — Index Document, Knowledge — Search |
 | [Missed call recovery](missed-call-recovery.md) | An inbound call is saved as missed | Missed Call Recovery, then Campaign Call Dispatcher |
+| [Appointment booking](appointment-booking.md) | The Book Appointment dialog, or the ElevenLabs voice agent's `book_appointment`/`cancel_appointment` tools | ElevenLabs — Book Appointment, ElevenLabs — Cancel Appointment |
 
 AI insights are calculated in DentalFlow from the last 30 days of calls, leads, and appointments. They do not use an n8n workflow.
 
-The original spec also names appointment reminders, appointment booking, recall campaigns, treatment follow-up, review requests, and daily reports. Those do not have n8n workflows yet, so they have no procedure.
+The original spec also names appointment reminders, recall campaigns, treatment follow-up, review requests, and daily reports. Those do not have n8n workflows yet, so they have no procedure.
 
 Every workflow that writes to Supabase uses the **Supabase account** credential and sets `organization_id` itself. The Maple Grove id is `11111111-1111-1111-1111-111111111111`.

@@ -215,6 +215,7 @@ export interface Database {
           source: string | null;
           estimated_value: number;
           notes: string | null;
+          calendar_event_id: string | null;
           created_at: string;
           updated_at: string;
         };

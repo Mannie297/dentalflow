@@ -372,6 +372,13 @@ export interface Appointment extends BaseEntity {
   campaign_id: UUID | null;
   estimated_value: number;
   notes: string | null;
+  /**
+   * The Google Calendar event id for this appointment, set by the n8n
+   * "ElevenLabs — Book Appointment" workflow when calendar sync is configured.
+   * Null when the appointment was created without calendar sync (e.g. Demo
+   * Mode, or a Live Mode deployment with no booking webhook set).
+   */
+  calendar_event_id: string | null;
 }
 
 export type CampaignType =

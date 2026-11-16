@@ -42,6 +42,7 @@ function defaultTime(): string {
 
 const EMPTY_FORM = {
   patientName: "",
+  phone: "",
   patientType: "new" as PatientType,
   service: "" as DentalServiceType | "",
   dentistName: DENTISTS[0],
@@ -56,6 +57,7 @@ export function BookAppointmentDialog({
   trigger,
   triggerVariant = "default",
   defaultPatientName,
+  defaultPhone,
   defaultPatientType = "new",
   leadId,
   patientId,
@@ -66,6 +68,8 @@ export function BookAppointmentDialog({
   trigger?: React.ReactElement;
   triggerVariant?: "default" | "outline";
   defaultPatientName?: string;
+  /** Pre-fills the phone field when the caller/patient's number is already known (e.g. from a call or patient record). Required by the n8n booking workflow to find-or-create the patient. */
+  defaultPhone?: string;
   defaultPatientType?: PatientType;
   leadId?: string;
   patientId?: string;
@@ -76,6 +80,7 @@ export function BookAppointmentDialog({
   const [form, setForm] = useState({
     ...EMPTY_FORM,
     patientName: defaultPatientName ?? "",
+    phone: defaultPhone ?? "",
     patientType: defaultPatientType,
   });
   const createAppointment = useCreateAppointment();
@@ -86,6 +91,7 @@ export function BookAppointmentDialog({
       date: defaultDate(),
       time: defaultTime(),
       patientName: defaultPatientName ?? "",
+      phone: defaultPhone ?? "",
       patientType: defaultPatientType,
     });
     setOpen(false);
@@ -105,6 +111,7 @@ export function BookAppointmentDialog({
     createAppointment.mutate(
       {
         patient_name: form.patientName.trim(),
+        phone: form.phone.trim(),
         patient_type: form.patientType,
         service: form.service,
         dentist_name: form.dentistName,
@@ -124,7 +131,8 @@ export function BookAppointmentDialog({
           });
           resetAndClose();
         },
-        onError: () => toast.error("Couldn't book the appointment. Please try again."),
+        onError: (error) =>
+          toast.error(error instanceof Error ? error.message : "Couldn't book the appointment. Please try again."),
       }
     );
   }
@@ -158,6 +166,17 @@ export function BookAppointmentDialog({
                 required
                 value={form.patientName}
                 onChange={(e) => setForm((f) => ({ ...f, patientName: e.target.value }))}
+              />
+            </div>
+            <div className="col-span-2 space-y-1.5">
+              <Label htmlFor="appt-phone">Phone</Label>
+              <Input
+                id="appt-phone"
+                type="tel"
+                required
+                placeholder="(555) 123-4567"
+                value={form.phone}
+                onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
               />
             </div>
             <div className="space-y-1.5">
@@ -268,7 +287,10 @@ export function BookAppointmentDialog({
 
           <DialogFooter>
             <DialogClose render={<Button type="button" variant="ghost" />}>Cancel</DialogClose>
-            <Button type="submit" disabled={createAppointment.isPending || !form.patientName.trim() || !form.service}>
+            <Button
+              type="submit"
+              disabled={createAppointment.isPending || !form.patientName.trim() || !form.phone.trim() || !form.service}
+            >
               {createAppointment.isPending ? "Booking…" : "Book appointment"}
             </Button>
           </DialogFooter>

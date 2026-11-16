@@ -226,6 +226,7 @@ export function mapAppointmentRow(row: AppointmentRow): Appointment {
     campaign_id: row.campaign_id,
     estimated_value: Number(row.estimated_value),
     notes: row.notes,
+    calendar_event_id: row.calendar_event_id,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };

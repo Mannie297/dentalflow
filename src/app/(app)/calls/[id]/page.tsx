@@ -214,6 +214,7 @@ export default function CallDetailPage() {
           <BookAppointmentDialog
             triggerVariant="outline"
             defaultPatientName={callerName}
+            defaultPhone={call.phone_number}
             defaultPatientType={call.intent === "existing_patient" ? "existing" : "new"}
             patientId={call.patient_id ?? undefined}
             callId={call.id}

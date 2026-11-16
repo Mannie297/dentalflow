@@ -1,0 +1,396 @@
+{
+  "name": "ElevenLabs — Book Appointment",
+  "meta": {
+    "description": "Books an appointment: checks the dentist's schedule for a conflict, finds or creates the patient, creates the Google Calendar event, writes the appointment row, and logs appointment.confirmed. Called directly by the ElevenLabs voice agent's booking tool, and by DentalFlow's own Book Appointment dialog when NEXT_PUBLIC_N8N_BOOK_APPOINTMENT_WEBHOOK_URL is set. See /docs/N8N_WORKFLOWS.md."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: Book Appointment",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1600, 0],
+      "parameters": {
+        "path": "book-appointment",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Validate & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1380, 0],
+      "parameters": {
+        "jsCode": "const ORG = '11111111-1111-1111-1111-111111111111';\nconst CALENDAR_ID = '';\n\nconst SERVICE_LABELS = {\n  general_cleaning: 'General Cleaning',\n  emergency_dental: 'Emergency Dental',\n  dental_exam: 'Dental Exam',\n  implants: 'Dental Implants',\n  invisalign: 'Invisalign',\n  whitening: 'Whitening',\n  crowns: 'Crowns',\n  root_canal: 'Root Canal',\n  childrens_dentistry: \"Children's Dentistry\",\n  other: 'Other'\n};\nconst DEFAULT_DURATION_MINUTES = {\n  general_cleaning: 30, emergency_dental: 30, dental_exam: 30, implants: 60,\n  invisalign: 45, whitening: 45, crowns: 60, root_canal: 60, childrens_dentistry: 30, other: 30\n};\n\nfunction normalizePhone(raw) {\n  const trimmed = String(raw || '').trim();\n  const hasPlus = trimmed.startsWith('+');\n  const digits = trimmed.replace(/[^0-9]/g, '');\n  return hasPlus ? `+${digits}` : digits;\n}\nfunction capitalize(v) {\n  return String(v || '').trim().split(/\\s+/).filter(Boolean)\n    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');\n}\n\nconst b = $input.first().json.body ?? $input.first().json;\nconst errors = [];\n\nconst organizationId = String(b.organization_id || ORG).trim();\nconst calendarId = String(b.calendar_id || CALENDAR_ID).trim();\nconst patientName = capitalize(b.patient_name);\nconst phone = normalizePhone(b.phone);\nconst service = String(b.service || '').trim();\nconst dentistName = String(b.dentist_name || '').trim();\nconst startsAtDate = b.starts_at ? new Date(b.starts_at) : null;\n\nif (!patientName) errors.push('patient_name is required.');\nif (phone.replace(/[^0-9]/g, '').length < 7) errors.push('phone must include at least 7 digits.');\nif (!service || !(service in SERVICE_LABELS)) errors.push(`service must be one of: ${Object.keys(SERVICE_LABELS).join(', ')}.`);\nif (!dentistName) errors.push('dentist_name is required.');\nif (!startsAtDate || Number.isNaN(startsAtDate.getTime())) errors.push('starts_at must be a valid ISO date-time.');\nif (!calendarId) errors.push('Set CALENDAR_ID in Validate & Normalize, or send calendar_id.');\n\nconst durationMinutes = Number(b.duration_minutes) > 0 ? Number(b.duration_minutes) : (DEFAULT_DURATION_MINUTES[service] || 30);\nconst startsAt = startsAtDate && !Number.isNaN(startsAtDate.getTime()) ? startsAtDate : null;\nconst endsAt = b.ends_at ? new Date(b.ends_at) : (startsAt ? new Date(startsAt.getTime() + durationMinutes * 60000) : null);\nif (startsAt && endsAt && endsAt.getTime() <= startsAt.getTime()) errors.push('ends_at must be after starts_at.');\n\nconst serviceLabel = SERVICE_LABELS[service] || service;\nconst notes = b.notes ? String(b.notes).trim() : null;\nconst nameParts = patientName.split(/\\s+/);\n\nreturn [{\n  json: {\n    _valid: errors.length === 0,\n    _errors: errors,\n    organization_id: organizationId,\n    calendar_id: calendarId,\n    patient_name: patientName,\n    first_name: nameParts[0] || patientName,\n    last_name: nameParts.slice(1).join(' '),\n    phone,\n    service,\n    service_label: serviceLabel,\n    dentist_name: dentistName,\n    starts_at: startsAt ? startsAt.toISOString() : null,\n    ends_at: endsAt ? endsAt.toISOString() : null,\n    estimated_value: Number(b.estimated_value) || 0,\n    notes,\n    source: b.source || null,\n    lead_id: b.lead_id || null,\n    patient_id: b.patient_id || null,\n    call_id: b.call_id || null,\n    calendar_summary: `${serviceLabel} — ${patientName}`,\n    calendar_description: `Phone: ${phone}${notes ? `\\nNotes: ${notes}` : ''}\\nBooked via DentalFlow AI Receptionist.`\n  }\n}];"
+      }
+    },
+    {
+      "id": "validation_passed",
+      "name": "Validation Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1160, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json._valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_invalid",
+      "name": "Respond: Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-940, 240],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._errors.join(' ') } }}",
+        "options": { "responseCode": 400 }
+      }
+    },
+    {
+      "id": "check_availability",
+      "name": "Check Availability",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-940, -120],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/appointments",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "=eq.{{ $json.organization_id }}" },
+            { "name": "dentist_name", "value": "=eq.{{ $json.dentist_name }}" },
+            { "name": "status", "value": "=in.(requested,confirmed)" },
+            { "name": "starts_at", "value": "=lt.{{ $json.ends_at }}" },
+            { "name": "ends_at", "value": "=gt.{{ $json.starts_at }}" },
+            { "name": "select", "value": "id" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "evaluate_availability",
+      "name": "Evaluate Availability",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-720, -120],
+      "parameters": {
+        "jsCode": "const conflicts = $json.body ?? [];\nconst prior = $('Validate & Normalize').item.json;\nreturn [{ json: { ...prior, _available: !Array.isArray(conflicts) || conflicts.length === 0 } }];"
+      }
+    },
+    {
+      "id": "slot_available",
+      "name": "Slot Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-500, -120],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json._available }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_unavailable",
+      "name": "Respond: Unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-280, 120],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: 'That time is already booked for ' + $json.dentist_name + '. Please offer a different time.' } }}",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "find_patient",
+      "name": "Find Patient",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-280, -260],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/patients",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "=eq.{{ $json.organization_id }}" },
+            { "name": "phone", "value": "=eq.{{ $json.phone }}" },
+            { "name": "select", "value": "id" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "prepare_patient",
+      "name": "Prepare Patient",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-60, -260],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nconst normalized = $('Validate & Normalize').item.json;\nreturn [{ json: { ...normalized, patient_id: matches[0]?.id ?? null, found: Boolean(matches[0]) } }];"
+      }
+    },
+    {
+      "id": "patient_found",
+      "name": "Patient Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [160, -260],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.found }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "use_existing_patient",
+      "name": "Use Existing Patient",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, -340],
+      "parameters": {
+        "jsCode": "return [{ json: { ...$input.first().json, found: true } }];"
+      }
+    },
+    {
+      "id": "create_patient",
+      "name": "Create Patient",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [380, -120],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/patients",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $json.organization_id }}" },
+            { "name": "first_name", "value": "={{ $json.first_name }}" },
+            { "name": "last_name", "value": "={{ $json.last_name }}" },
+            { "name": "phone", "value": "={{ $json.phone }}" },
+            { "name": "patient_type", "value": "new" },
+            { "name": "lead_source", "value": "={{ $json.source || 'inbound_call' }}" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "use_new_patient",
+      "name": "Use New Patient",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, -120],
+      "parameters": {
+        "jsCode": "const created = ($json.body ?? [])[0];\nconst prior = $('Prepare Patient').item.json;\nreturn [{ json: { ...prior, patient_id: created.id, found: false } }];"
+      }
+    },
+    {
+      "id": "create_calendar_event",
+      "name": "Create Calendar Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [820, -230],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.calendar_id) }}/events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ summary: $json.calendar_summary, description: $json.calendar_description, start: { dateTime: $json.starts_at }, end: { dateTime: $json.ends_at } }) }}",
+        "options": {
+          "response": { "response": { "fullResponse": true, "neverError": true } }
+        }
+      },
+      "credentials": { "googleCalendarOAuth2Api": { "id": "google-calendar-account", "name": "Google Calendar account" } }
+    },
+    {
+      "id": "read_calendar_response",
+      "name": "Read Calendar Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, -230],
+      "parameters": {
+        "jsCode": "let prior;\ntry { prior = $('Use Existing Patient').item.json; } catch (e) { prior = $('Use New Patient').item.json; }\n\nconst res = $json;\nlet payload = res.body !== undefined ? res.body : res;\nif (typeof payload === 'string') {\n  try { payload = JSON.parse(payload); } catch (e) { payload = { message: payload }; }\n}\nconst status = Number(res.statusCode || res.status || 0);\nconst ok = status >= 200 && status < 300 && payload && typeof payload.id === 'string';\nconst apiError = payload && payload.error && payload.error.message;\nconst errorMessage = ok ? null : (apiError || `Google Calendar did not create the event (HTTP ${status}). Check the CALENDAR_ID and the Google Calendar account credential.`);\n\nreturn [{\n  json: {\n    ...prior,\n    _calendar_ok: ok,\n    _calendar_error: errorMessage,\n    calendar_event_id: ok ? payload.id : null\n  }\n}];"
+      }
+    },
+    {
+      "id": "calendar_event_created",
+      "name": "Calendar Event Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1260, -230],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json._calendar_ok }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_calendar_failed",
+      "name": "Respond: Calendar Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1480, 40],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._calendar_error } }}",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "create_appointment",
+      "name": "Create Appointment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1480, -340],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/appointments",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $json.organization_id }}" },
+            { "name": "patient_id", "value": "={{ $json.patient_id }}" },
+            { "name": "patient_name", "value": "={{ $json.patient_name }}" },
+            { "name": "patient_type", "value": "={{ $json.found ? 'existing' : 'new' }}" },
+            { "name": "service", "value": "={{ $json.service }}" },
+            { "name": "dentist_name", "value": "={{ $json.dentist_name }}" },
+            { "name": "starts_at", "value": "={{ $json.starts_at }}" },
+            { "name": "ends_at", "value": "={{ $json.ends_at }}" },
+            { "name": "status", "value": "confirmed" },
+            { "name": "source", "value": "={{ $json.source }}" },
+            { "name": "lead_id", "value": "={{ $json.lead_id }}" },
+            { "name": "call_id", "value": "={{ $json.call_id }}" },
+            { "name": "estimated_value", "value": "={{ $json.estimated_value }}" },
+            { "name": "notes", "value": "={{ $json.notes }}" },
+            { "name": "calendar_event_id", "value": "={{ $json.calendar_event_id }}" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "log_event",
+      "name": "Log automation_events: appointment.confirmed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1700, -340],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "organization_id", "value": "={{ $json.body[0].organization_id }}" },
+            { "name": "event_type", "value": "appointment.confirmed" },
+            { "name": "entity_type", "value": "appointment" },
+            { "name": "entity_id", "value": "={{ $json.body[0].id }}" },
+            { "name": "payload", "value": "={{ { patient_name: $json.body[0].patient_name, dentist_name: $json.body[0].dentist_name, service: $json.body[0].service, starts_at: $json.body[0].starts_at, calendar_event_id: $json.body[0].calendar_event_id } }}" },
+            { "name": "status", "value": "completed" }
+          ]
+        },
+        "options": { "response": { "response": { "fullResponse": true } } }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-account", "name": "Supabase account" } }
+    },
+    {
+      "id": "respond_success",
+      "name": "Respond: Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1920, -340],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, appointment: $('Create Appointment').item.json.body[0], message: 'Appointment booked.' } }}",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Book Appointment": { "main": [[{ "node": "Validate & Normalize", "type": "main", "index": 0 }]] },
+    "Validate & Normalize": { "main": [[{ "node": "Validation Passed?", "type": "main", "index": 0 }]] },
+    "Validation Passed?": {
+      "main": [
+        [{ "node": "Check Availability", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Invalid", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Availability": { "main": [[{ "node": "Evaluate Availability", "type": "main", "index": 0 }]] },
+    "Evaluate Availability": { "main": [[{ "node": "Slot Available?", "type": "main", "index": 0 }]] },
+    "Slot Available?": {
+      "main": [
+        [{ "node": "Find Patient", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Unavailable", "type": "main", "index": 0 }]
+      ]
+    },
+    "Find Patient": { "main": [[{ "node": "Prepare Patient", "type": "main", "index": 0 }]] },
+    "Prepare Patient": { "main": [[{ "node": "Patient Found?", "type": "main", "index": 0 }]] },
+    "Patient Found?": {
+      "main": [
+        [{ "node": "Use Existing Patient", "type": "main", "index": 0 }],
+        [{ "node": "Create Patient", "type": "main", "index": 0 }]
+      ]
+    },
+    "Use Existing Patient": { "main": [[{ "node": "Create Calendar Event", "type": "main", "index": 0 }]] },
+    "Create Patient": { "main": [[{ "node": "Use New Patient", "type": "main", "index": 0 }]] },
+    "Use New Patient": { "main": [[{ "node": "Create Calendar Event", "type": "main", "index": 0 }]] },
+    "Create Calendar Event": { "main": [[{ "node": "Read Calendar Response", "type": "main", "index": 0 }]] },
+    "Read Calendar Response": { "main": [[{ "node": "Calendar Event Created?", "type": "main", "index": 0 }]] },
+    "Calendar Event Created?": {
+      "main": [
+        [{ "node": "Create Appointment", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Calendar Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Appointment": { "main": [[{ "node": "Log automation_events: appointment.confirmed", "type": "main", "index": 0 }]] },
+    "Log automation_events: appointment.confirmed": { "main": [[{ "node": "Respond: Success", "type": "main", "index": 0 }]] }
+  }
+}

@@ -610,6 +610,7 @@ function buildAppointment(
     campaign_id: opts.campaignId,
     estimated_value: serviceAverageValue(opts.service),
     notes: null,
+    calendar_event_id: null,
     created_at: (opts.bookedAt ?? opts.startsAt).toISOString(),
     updated_at: (opts.bookedAt ?? opts.startsAt).toISOString(),
   };

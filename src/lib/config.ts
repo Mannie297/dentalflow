@@ -38,6 +38,15 @@ export const appConfig = {
   n8nCallWebhookUrl: process.env.NEXT_PUBLIC_N8N_CALL_WEBHOOK_URL ?? "",
   // Live Mode "Call back" posts here. Points at n8n "ElevenLabs — Outbound Call".
   n8nOutboundWebhookUrl: process.env.NEXT_PUBLIC_N8N_OUTBOUND_WEBHOOK_URL ?? "",
+  // Optional. When set, booking an appointment (the Book Appointment dialog, or the
+  // ElevenLabs voice agent's booking tool) posts here instead of writing directly to
+  // Supabase. Points at n8n "ElevenLabs — Book Appointment", which creates the Google
+  // Calendar event and the appointment row together. See /docs/N8N_WORKFLOWS.md.
+  n8nBookAppointmentWebhookUrl: process.env.NEXT_PUBLIC_N8N_BOOK_APPOINTMENT_WEBHOOK_URL ?? "",
+  // Optional. When set, cancelling an appointment posts here instead of updating
+  // Supabase directly. Points at n8n "ElevenLabs — Cancel Appointment", which deletes
+  // the Google Calendar event (when one exists) and marks the appointment cancelled.
+  n8nCancelAppointmentWebhookUrl: process.env.NEXT_PUBLIC_N8N_CANCEL_APPOINTMENT_WEBHOOK_URL ?? "",
   defaultOrganizationId: process.env.NEXT_PUBLIC_DEFAULT_ORGANIZATION_ID ?? "",
   appName: "DentalFlow AI",
 } as const;
@@ -56,6 +65,14 @@ export function isN8nCallIntakeConfigured(): boolean {
 
 export function isN8nOutboundConfigured(): boolean {
   return Boolean(appConfig.n8nOutboundWebhookUrl);
+}
+
+export function isN8nBookAppointmentConfigured(): boolean {
+  return Boolean(appConfig.n8nBookAppointmentWebhookUrl);
+}
+
+export function isN8nCancelAppointmentConfigured(): boolean {
+  return Boolean(appConfig.n8nCancelAppointmentWebhookUrl);
 }
 
 /**

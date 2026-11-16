@@ -162,7 +162,7 @@ Every workflow failure path writes to `automation_logs` with: `workflow_name`, `
 | `lead.created` | CORE — Lead Intake | A new (or updated-from-duplicate) lead was written to Supabase. |
 | `lead.qualified` | AI — Lead Qualification | AI qualification completed successfully and the lead was updated. A failed qualification is logged to `automation_logs`, not `automation_events`, since no entity state actually changed. |
 
-`src/types/events.ts` defines the full long-term event vocabulary (`SUPPORTED_EVENT_NAMES`). The workflows in this repo emit `lead.created`, `lead.qualified`, `call.completed`, and `call.missed`.
+`src/types/events.ts` defines the full long-term event vocabulary (`SUPPORTED_EVENT_NAMES`). The workflows in this repo emit `lead.created`, `lead.qualified`, `call.completed`, `call.missed`, `appointment.confirmed`, and `appointment.cancelled`.
 
 ## CORE — Call Intake
 
@@ -358,3 +358,153 @@ The workflow reads inbound `calls` with `status = missed` and `recovered_from_mi
 Campaign Call Dispatcher places the call through `/webhook/outbound-call`. When that dial is accepted, DentalFlow sets `calls.recovered_from_missed` to true. A paused recovery campaign is left alone, so pausing it in the app stops new callbacks.
 
 SMS and email are not sent. The same queue runs while DentalFlow is open, from `enqueueMissedCallRecoveries`.
+
+## ElevenLabs — Book Appointment
+
+**Trigger:** `POST` webhook (`/webhook/book-appointment`). Called directly by the ElevenLabs voice agent's `book_appointment` tool during a live call (see `/n8n/prompts/appointment-tools.md`), and by DentalFlow's own Book Appointment dialog (`createAppointment()` in `src/lib/services/appointments.service.ts`) when `NEXT_PUBLIC_N8N_BOOK_APPOINTMENT_WEBHOOK_URL` is set — so a booking made on a phone call and one made by staff in the app go through the same workflow and land on the same Google Calendar.
+
+Importable JSON: `/n8n/workflows/elevenlabs-book-appointment.json`.
+
+```
+Webhook
+  -> Validate & Normalize
+  -> Validation Passed?
+       |-- no  --> Respond: Invalid (400)
+       |-- yes --> Check Availability (Supabase)
+                 -> Slot Available?
+                      |-- no  --> Respond: Unavailable
+                      |-- yes --> Find Patient (Supabase)
+                                -> Patient Found?
+                                     |-- yes --> Use Existing Patient
+                                     |-- no  --> Create Patient --> Use New Patient
+                                -> Create Calendar Event (Google Calendar)
+                                -> Read Calendar Response
+                                -> Calendar Event Created?
+                                     |-- no  --> Respond: Calendar Failed
+                                     |-- yes --> Create Appointment (Supabase)
+                                               -> Log automation_events: appointment.confirmed
+                                               -> Respond: Success
+```
+
+### Input
+
+```json
+{
+  "organization_id": "uuid",
+  "patient_name": "Ada Lovelace",
+  "phone": "+14165550199",
+  "service": "implants",
+  "dentist_name": "Dr. Chen",
+  "starts_at": "2026-11-20T14:00:00-05:00",
+  "duration_minutes": 60,
+  "estimated_value": 6000,
+  "notes": "Interested in a single-tooth implant.",
+  "source": "inbound_call",
+  "lead_id": null,
+  "patient_id": null,
+  "call_id": null
+}
+```
+
+`organization_id` defaults to the Maple Grove id when omitted. `service` must be one of the `DentalServiceType` values (see `src/types/index.ts`). `duration_minutes` defaults by service (30–60 minutes) when omitted; send `ends_at` directly instead if a caller already supplied an exact end time. `dentist_name` must match one of the clinic's dentist names — there is no "any available dentist" option, since the availability check is per dentist.
+
+### Validation
+
+- `patient_name`, a `phone` with at least 7 digits, a known `service`, `dentist_name`, and a valid `starts_at` are required.
+- `CALENDAR_ID` must be set in the workflow's **Validate & Normalize** node (or sent as `calendar_id`) — see `/n8n/README.md`.
+
+### Availability check
+
+`GET /rest/v1/appointments?organization_id=eq.{id}&dentist_name=eq.{name}&status=in.(requested,confirmed)&starts_at=lt.{ends_at}&ends_at=gt.{starts_at}&select=id&limit=1`
+
+A match means the requested time overlaps an existing booking for that dentist. The workflow never double-books — it returns a controlled failure instead (see "Response contract") so the agent can offer a different time.
+
+### Patient lookup
+
+Same find-or-create-by-phone pattern as CORE — Call Intake's patient handling: `GET /rest/v1/patients?organization_id=eq.{id}&phone=eq.{phone}`, creating a new `patient_type: "new"` patient on no match.
+
+### Google Calendar event
+
+`POST https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events` with `summary` (`"{service label} — {patient name}"`), `description` (the phone number and any notes), and `start`/`end` as `{ dateTime }` objects. The resulting event `id` is stored on the appointment as `calendar_event_id` (see `0006_appointment_calendar_sync.sql`) so **ElevenLabs — Cancel Appointment** can delete the same event later. If the Calendar API call fails, no appointment row is created — the caller never hears "you're booked" for something that isn't actually on the calendar.
+
+### Appointment row
+
+Created directly with `status: "confirmed"` (not `"requested"`) — unlike a manually-drafted booking, this flow already has a real Google Calendar event backing the time slot, so there is nothing left to confirm.
+
+### Event logged
+
+`automation_events` row: `event_type = "appointment.confirmed"`, `entity_type = "appointment"`, `entity_id = <appointment id>`, `payload` includes `patient_name`, `dentist_name`, `service`, `starts_at`, `calendar_event_id`.
+
+### Response contract
+
+Success:
+```json
+{ "success": true, "appointment": { "id": "uuid", "...": "the full appointments row, including calendar_event_id" }, "message": "Appointment booked." }
+```
+Controlled failure (validation, slot unavailable, calendar API error) — never a raw stack trace:
+```json
+{ "success": false, "error": "That time is already booked for Dr. Chen. Please offer a different time." }
+```
+
+## ElevenLabs — Cancel Appointment
+
+**Trigger:** `POST` webhook (`/webhook/cancel-appointment`). Called directly by the ElevenLabs voice agent's `cancel_appointment` tool, and by DentalFlow's Appointments page (`updateAppointmentStatus(id, "cancelled")` in `src/lib/services/appointments.service.ts`) when `NEXT_PUBLIC_N8N_CANCEL_APPOINTMENT_WEBHOOK_URL` is set. Every other status change (confirm, complete, mark no-show) still writes to Supabase directly — only cancelling needs to clean up an external calendar event.
+
+Importable JSON: `/n8n/workflows/elevenlabs-cancel-appointment.json`.
+
+```
+Webhook
+  -> Validate & Normalize
+  -> Validation Passed?
+       |-- no  --> Respond: Invalid (400)
+       |-- yes --> Has Appointment Id?
+                      |-- yes --> Get Appointment By Id (Supabase)
+                      |-- no  --> Find Patient By Phone (Supabase)
+                                -> Patient Found?
+                                     |-- no  --> Respond: No Patient
+                                     |-- yes --> Get Upcoming Appointments By Patient (Supabase)
+                 -> Resolve Appointment
+                 -> Appointment Found?
+                      |-- no  --> Respond: No Appointment
+                      |-- yes --> Has Calendar Event?
+                                     |-- yes --> Delete Calendar Event (Google Calendar) --> Update Appointment Status
+                                     |-- no  --> Update Appointment Status
+                 -> Log automation_events: appointment.cancelled
+                 -> Respond: Success
+```
+
+### Input
+
+Either an id (the common case from the app, which already has it):
+```json
+{ "appointment_id": "uuid" }
+```
+Or a phone lookup (the common case from a phone call, where the caller only knows their own number):
+```json
+{ "phone": "+14165550199", "date": "2026-11-20" }
+```
+
+`date` (optional, `YYYY-MM-DD`) disambiguates when the phone lookup finds more than one upcoming appointment; otherwise the soonest one is chosen. Either `appointment_id` or a `phone` with at least 7 digits is required.
+
+### Appointment lookup
+
+By id: `GET /rest/v1/appointments?id=eq.{id}&organization_id=eq.{org}`. By phone: find the patient (`GET /rest/v1/patients?phone=eq...`), then the patient's next up to 5 appointments with `status=in.(requested,confirmed)&starts_at=gte.{now}&order=starts_at.asc`, picking the one matching `date` when given.
+
+### Google Calendar event
+
+When the found appointment has a `calendar_event_id`, `DELETE https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events/{calendar_event_id}` runs first. This step is best-effort (`onError: continueRegularOutput`) — an already-deleted or missing calendar event does not block cancelling the appointment in DentalFlow. An appointment with no `calendar_event_id` (created before calendar sync was configured, or in Demo Mode) skips straight to updating the status.
+
+### Event logged
+
+`automation_events` row: `event_type = "appointment.cancelled"`, `entity_type = "appointment"`, `entity_id = <appointment id>`, `payload` includes `patient_name`, `dentist_name`, `starts_at`.
+
+### Response contract
+
+Success:
+```json
+{ "success": true, "appointment": { "id": "uuid", "status": "cancelled", "...": "the full appointments row" }, "message": "Appointment cancelled." }
+```
+Controlled failure (validation, no matching patient, no upcoming appointment):
+```json
+{ "success": false, "error": "No upcoming appointment was found to cancel." }
+```
