@@ -9,7 +9,7 @@ export const DEMO_ORGANIZATION: Organization = {
   province: "Ontario",
   postal_code: "L5B 3C9",
   address_line1: "185 Central Parkway West",
-  phone: "(905) 555-0148",
+  phone: "(438) 231-8775",
   timezone: "America/Toronto",
   logo_url: null,
   plan: "growth",

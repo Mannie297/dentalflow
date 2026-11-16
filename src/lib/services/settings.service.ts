@@ -62,7 +62,7 @@ export const DEFAULT_AI_SETTINGS: AIReceptionistSettings = {
   enabled: true,
   businessHours: DEFAULT_HOURS,
   afterHoursBehavior: "emergency_transfer",
-  transferNumber: "(905) 555-0148",
+  transferNumber: "(438) 231-8775",
   emergencyPolicy: EMERGENCY_POLICY,
   servicesSummary: Object.entries(DENTAL_SERVICE_LABELS)
     .filter(([type]) => type !== "other")

@@ -18,7 +18,7 @@ insert into public.organizations (
   'maple-grove-dental',
   'dental',
   'America/Toronto',
-  '(905) 555-0148',
+  '(438) 231-8775',
   'hello@maplegrovedental.ca',
   'Mississauga',
   'Ontario',
