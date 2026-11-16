@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AppointmentStatus } from "@/types";
+import type { Appointment, AppointmentStatus } from "@/types";
 import {
   type AppointmentFilters,
   type CreateAppointmentInput,
   createAppointment,
+  getAppointmentCaller,
   getAppointments,
   getUpcomingAppointments,
   updateAppointmentStatus,
@@ -16,6 +17,15 @@ export function useAppointments(filters: AppointmentFilters = {}) {
     queryKey: ["appointments", filters],
     queryFn: () => getAppointments(filters),
     enabled: hasHydrated,
+  });
+}
+
+export function useAppointmentCaller(appointment: Appointment | null) {
+  const hasHydrated = useHasHydrated();
+  return useQuery({
+    queryKey: ["appointment-caller", appointment?.id, appointment?.call_id, appointment?.patient_id, appointment?.created_at],
+    queryFn: () => getAppointmentCaller(appointment as Appointment),
+    enabled: hasHydrated && appointment != null,
   });
 }
 

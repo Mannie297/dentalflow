@@ -24,7 +24,7 @@
       "typeVersion": 2,
       "position": [-1380, 0],
       "parameters": {
-        "jsCode": "const ORG = '11111111-1111-1111-1111-111111111111';\nconst CALENDAR_ID = '';\n\nfunction normalizePhone(raw) {\n  if (!raw) return '';\n  const trimmed = String(raw).trim();\n  const hasPlus = trimmed.startsWith('+');\n  const digits = trimmed.replace(/[^0-9]/g, '');\n  return hasPlus ? `+${digits}` : digits;\n}\n\nconst b = $input.first().json.body ?? $input.first().json;\nconst errors = [];\n\nconst organizationId = String(b.organization_id || ORG).trim();\nconst calendarId = String(b.calendar_id || CALENDAR_ID).trim();\nconst appointmentId = b.appointment_id ? String(b.appointment_id).trim() : '';\nconst phone = normalizePhone(b.phone);\nconst date = b.date ? String(b.date).trim().slice(0, 10) : null;\n\nif (!appointmentId && phone.replace(/[^0-9]/g, '').length < 7) {\n  errors.push('Either appointment_id, or a phone number with at least 7 digits, is required.');\n}\nif (!calendarId) errors.push('Set CALENDAR_ID in Validate & Normalize, or send calendar_id.');\n\nreturn [{\n  json: {\n    _valid: errors.length === 0,\n    _errors: errors,\n    organization_id: organizationId,\n    calendar_id: calendarId,\n    appointment_id: appointmentId,\n    phone,\n    date\n  }\n}];"
+        "jsCode": "const ORG = '11111111-1111-1111-1111-111111111111';\nconst CALENDAR_ID = '';\n\nfunction normalizePhone(raw) {\n  const digits = String(raw || '').replace(/[^0-9]/g, '');\n  if (digits.length === 10) return `+1${digits}`;\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  if (String(raw || '').trim().startsWith('+') && digits) return `+${digits}`;\n  return digits;\n}\n\nconst b = $input.first().json.body ?? $input.first().json;\nconst errors = [];\n\nconst organizationId = String(b.organization_id || ORG).trim();\nconst calendarId = String(b.calendar_id || CALENDAR_ID).trim();\nconst appointmentId = b.appointment_id ? String(b.appointment_id).trim() : '';\nconst phone = normalizePhone(b.phone);\nconst phoneDigits = phone.replace(/[^0-9]/g, '');\nconst phoneLike = phoneDigits.length >= 7 ? phoneDigits.slice(-10) : '';\nconst date = b.date ? String(b.date).trim().slice(0, 10) : null;\n\nif (!appointmentId && phone.replace(/[^0-9]/g, '').length < 7) {\n  errors.push('Either appointment_id, or a phone number with at least 7 digits, is required.');\n}\nif (!calendarId) errors.push('Set CALENDAR_ID in Validate & Normalize, or send calendar_id.');\n\nreturn [{\n  json: {\n    _valid: errors.length === 0,\n    _errors: errors,\n    organization_id: organizationId,\n    calendar_id: calendarId,\n    appointment_id: appointmentId,\n    phone,\n    phone_like: phoneLike,\n    date\n  }\n}];"
       }
     },
     {
@@ -110,9 +110,9 @@
         "queryParameters": {
           "parameters": [
             { "name": "organization_id", "value": "=eq.{{ $json.organization_id }}" },
-            { "name": "phone", "value": "=eq.{{ $json.phone }}" },
+            { "name": "phone", "value": "=match.{{ $json.phone_like }}" },
             { "name": "select", "value": "id" },
-            { "name": "limit", "value": "1" }
+            { "name": "limit", "value": "10" }
           ]
         },
         "options": { "response": { "response": { "fullResponse": true } } }
@@ -126,7 +126,7 @@
       "typeVersion": 2,
       "position": [-500, 120],
       "parameters": {
-        "jsCode": "const body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nconst prior = $('Validate & Normalize').item.json;\nreturn [{ json: { ...prior, patient_id: matches[0]?.id ?? null, patient_found: Boolean(matches[0]) } }];"
+        "jsCode": "const body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nconst prior = $('Validate & Normalize').item.json;\nconst ids = matches.map((row) => row.id).filter(Boolean);\nreturn [{ json: { ...prior, patient_id: ids[0] ?? null, patient_ids: ids.join(','), patient_found: ids.length > 0 } }];"
       }
     },
     {
@@ -172,7 +172,7 @@
         "queryParameters": {
           "parameters": [
             { "name": "organization_id", "value": "=eq.{{ $json.organization_id }}" },
-            { "name": "patient_id", "value": "=eq.{{ $json.patient_id }}" },
+            { "name": "patient_id", "value": "=in.({{ $json.patient_ids }})" },
             { "name": "status", "value": "=in.(requested,confirmed)" },
             { "name": "starts_at", "value": "=gte.{{ $now.toISO() }}" },
             { "name": "order", "value": "starts_at.asc" },
@@ -191,7 +191,7 @@
       "typeVersion": 2,
       "position": [160, -60],
       "parameters": {
-        "jsCode": "const body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nconst prior = $('Validate & Normalize').item.json;\nlet chosen = matches[0] ?? null;\nif (matches.length > 1 && prior.date) {\n  const wanted = prior.date;\n  chosen = matches.find((m) => String(m.starts_at).slice(0, 10) === wanted) || matches[0];\n}\nreturn [{ json: { ...prior, found: Boolean(chosen), appointment: chosen } }];"
+        "jsCode": "function clinicDate(iso) {\n  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Toronto', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(iso));\n  const get = (type) => parts.find((part) => part.type === type)?.value ?? '';\n  return `${get('year')}-${get('month')}-${get('day')}`;\n}\nconst body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nconst prior = $('Validate & Normalize').item.json;\nlet chosen = null;\nif (prior.date) {\n  chosen = matches.find((row) => clinicDate(row.starts_at) === prior.date) ?? null;\n} else {\n  chosen = matches[0] ?? null;\n}\nreturn [{ json: { ...prior, found: Boolean(chosen), appointment: chosen } }];"
       }
     },
     {

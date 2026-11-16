@@ -121,7 +121,7 @@ Production webhooks answer only while the matching workflow is active.
 ## What this version does not do
 
 - It does not send SMS or marketing email.
-- It does not take payments or request reviews. It does not reschedule an appointment (cancel and re-book instead), and it does not send a calendar invite email to the patient.
+- It does not take payments or request reviews. It does not send a calendar invite email to the patient. The voice agent can move an existing visit with the reschedule tool.
 - It does not diagnose, prescribe, or invent a fee. A price in a knowledge-base answer has to appear in a document the clinic uploaded.
 - A scheduled call goes out while DentalFlow is open, or while the n8n dispatcher is active. A paused campaign is not dialed.
 

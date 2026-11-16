@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
-import { Ban, CheckCircle2, MessageSquare, Phone } from "lucide-react";
+import { Ban, CheckCircle2, FileText, MessageSquare } from "lucide-react";
 import type { Appointment, AppointmentStatus } from "@/types";
 import { APPOINTMENT_STATUS_LABELS, DENTAL_SERVICE_LABELS, LEAD_SOURCE_LABELS } from "@/types";
 import { APPOINTMENT_STATUS_TONE } from "@/lib/status-map";
-import { useUpdateAppointmentStatus } from "@/hooks/use-appointments";
+import { useAppointmentCaller, useUpdateAppointmentStatus } from "@/hooks/use-appointments";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,7 @@ export function AppointmentDetailSheet({
   if (appointment && appointment !== displayAppointment) {
     setDisplayAppointment(appointment);
   }
+  const caller = useAppointmentCaller(appointment ?? displayAppointment);
 
   if (!displayAppointment) return null;
 
@@ -98,6 +100,34 @@ export function AppointmentDetailSheet({
             <div className="rounded-lg bg-muted px-3 py-2 text-sm text-foreground">{displayAppointment.notes}</div>
           ) : null}
 
+          <div className="rounded-lg border border-border px-3 py-3 text-sm">
+            <p className="text-xs text-muted-foreground">Phone number</p>
+            <p className="mt-0.5 font-medium text-foreground">{caller.data?.phone || "No phone number on file"}</p>
+            {caller.data?.callId ? (
+              <Link
+                href={`/calls/${caller.data.callId}`}
+                className="mt-2 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-4 hover:underline"
+              >
+                <FileText className="h-4 w-4" aria-hidden="true" />
+                View call transcript
+              </Link>
+            ) : null}
+            {caller.data?.outboundCalls.map((call) => (
+              <Link
+                key={call.id}
+                href={`/calls/${call.id}`}
+                className="mt-2 flex items-center gap-1.5 font-medium text-foreground underline-offset-4 hover:underline"
+              >
+                <FileText className="h-4 w-4" aria-hidden="true" />
+                View outbound call transcript
+                <span className="font-normal text-muted-foreground">{formatDateTime(call.startedAt)}</span>
+              </Link>
+            ))}
+            {!caller.isLoading && !caller.data?.callId && (caller.data?.outboundCalls.length ?? 0) === 0 ? (
+              <p className="mt-2 text-xs text-muted-foreground">No call transcript for this visit.</p>
+            ) : null}
+          </div>
+
           <div>
             <label className="text-xs font-medium text-muted-foreground" id="appt-status-label">
               Status
@@ -117,18 +147,6 @@ export function AppointmentDetailSheet({
           </div>
 
           <div className="flex flex-wrap gap-2 border-t border-border pt-4">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                toast.info(`Calling ${displayAppointment.patient_name}…`, {
-                  description: "Demo mode — no real call is placed via Twilio.",
-                })
-              }
-            >
-              <Phone className="h-4 w-4" aria-hidden="true" />
-              Call
-            </Button>
             <Button
               variant="outline"
               size="sm"

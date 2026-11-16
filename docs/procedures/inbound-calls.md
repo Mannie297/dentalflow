@@ -22,6 +22,7 @@ Call filing is the shared procedure in [call intake](call-intake.md). Agent fiel
    - `patient_name` and `caller_name` — `there`
    - `call_reason` — `your recent visit`
    - `opening_line` — `Thank you for calling Maple Grove Dental Clinic. This is the virtual receptionist. How can I help you today?`
+   - `upcoming_visit` — `none`
 3. The agent's first message is `{{opening_line}}`, so the caller hears that greeting. The system prompt reads `{{direction}}` and treats the call as an incoming call. Dashboard placeholders are for the agent preview only. A live inbound call uses this webhook.
 4. The agent collects the caller's name, intent, and outcome through its data collection fields (`caller_name`, `intent`, `outcome`). Intent and outcome must be one of the values call intake accepts, or they are stored as empty.
 5. When the call ends, ElevenLabs posts `post_call_transcription` to `/webhook/elevenlabs-call`. That workflow answers immediately with `{"message":"Workflow was started"}` so ElevenLabs does not disable the webhook. Filing continues after that reply.

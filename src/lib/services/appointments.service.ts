@@ -1,4 +1,5 @@
 import type { Appointment, AppointmentStatus, DentalServiceType, LeadSource, PatientType, UpcomingAppointmentView } from "@/types";
+import { matchAppointmentCalls } from "@/lib/appointment-call";
 import { isWithinRange } from "@/lib/date-range";
 import { formatTime } from "@/lib/format";
 import { appConfig, isN8nBookAppointmentConfigured, isN8nCancelAppointmentConfigured } from "@/lib/config";
@@ -54,6 +55,119 @@ export async function getAppointments(filters: AppointmentFilters = {}): Promise
     result = result.filter((a) => a.patient_name.toLowerCase().includes(q));
   }
   return result;
+}
+
+export interface AppointmentCaller {
+  phone: string | null;
+  callId: string | null;
+  outboundCalls: { id: string; startedAt: string }[];
+}
+
+/** The booking call, and outbound calls placed for this patient after the visit existed. */
+export async function getAppointmentCaller(appointment: Appointment): Promise<AppointmentCaller> {
+  if (getCurrentDataSource() === "supabase") {
+    return getAppointmentCallerFromSupabase(appointment);
+  }
+
+  const { calls, patients } = getMockDataset();
+  const matched = matchAppointmentCalls(
+    {
+      id: appointment.id,
+      callId: appointment.call_id,
+      patientId: appointment.patient_id,
+      createdAt: appointment.created_at,
+    },
+    calls.map((call) => ({
+      id: call.id,
+      phone: call.phone_number,
+      patientId: call.patient_id,
+      appointmentId: call.appointment_id,
+      startedAt: call.started_at,
+      createdAt: call.created_at,
+      direction: call.direction,
+    }))
+  );
+  const patient = patients.find((row) => row.id === appointment.patient_id);
+  return {
+    phone: matched.phone ?? patient?.phone ?? null,
+    callId: matched.bookingCallId,
+    outboundCalls: matched.outboundCalls,
+  };
+}
+
+async function getAppointmentCallerFromSupabase(appointment: Appointment): Promise<AppointmentCaller> {
+  const supabase = getSupabaseBrowserClient();
+  const bookedAt = new Date(appointment.created_at).getTime();
+  const graceStart = new Date(bookedAt - 2 * 60 * 1000).toISOString();
+  const columns = "id, phone_number, patient_id, appointment_id, started_at, created_at, direction" as const;
+
+  let candidates: { id: string; phone_number: string; patient_id: string | null; appointment_id: string | null; started_at: string; created_at: string; direction: "inbound" | "outbound" }[] = [];
+
+  if (appointment.call_id) {
+    const { data, error } = await supabase.from("calls").select(columns).eq("id", appointment.call_id).limit(1);
+    if (error) throw error;
+    candidates = data ?? [];
+  } else {
+    const linked = await supabase.from("calls").select(columns).eq("appointment_id", appointment.id).limit(1);
+    if (linked.error) throw linked.error;
+    candidates = linked.data ?? [];
+
+    if (candidates.length === 0 && appointment.patient_id) {
+      const duringCall = await supabase
+        .from("calls")
+        .select(columns)
+        .eq("patient_id", appointment.patient_id)
+        .lte("started_at", new Date(bookedAt + 2 * 60 * 1000).toISOString())
+        .gte("created_at", graceStart)
+        .order("started_at", { ascending: false })
+        .limit(8);
+      if (duringCall.error) throw duringCall.error;
+      candidates = duringCall.data ?? [];
+    }
+  }
+
+  if (appointment.patient_id) {
+    const outbound = await supabase
+      .from("calls")
+      .select(columns)
+      .eq("patient_id", appointment.patient_id)
+      .eq("direction", "outbound")
+      .gte("started_at", graceStart)
+      .order("started_at", { ascending: false })
+      .limit(5);
+    if (outbound.error) throw outbound.error;
+    const seen = new Set(candidates.map((call) => call.id));
+    for (const call of outbound.data ?? []) {
+      if (!seen.has(call.id)) candidates.push(call);
+    }
+  }
+
+  const matched = matchAppointmentCalls(
+    {
+      id: appointment.id,
+      callId: appointment.call_id,
+      patientId: appointment.patient_id,
+      createdAt: appointment.created_at,
+    },
+    candidates.map((call) => ({
+      id: call.id,
+      phone: call.phone_number,
+      patientId: call.patient_id,
+      appointmentId: call.appointment_id,
+      startedAt: call.started_at,
+      createdAt: call.created_at,
+      direction: call.direction,
+    }))
+  );
+
+  if (matched.phone || matched.bookingCallId || matched.outboundCalls.length > 0) {
+    return { phone: matched.phone, callId: matched.bookingCallId, outboundCalls: matched.outboundCalls };
+  }
+
+  if (!appointment.patient_id) return { phone: null, callId: null, outboundCalls: [] };
+  const { data: patient, error: patientError } = await supabase.from("patients").select("phone").eq("id", appointment.patient_id).maybeSingle();
+  if (patientError) throw patientError;
+  return { phone: patient?.phone ?? null, callId: null, outboundCalls: [] };
 }
 
 export async function getUpcomingAppointments(limit = 6): Promise<UpcomingAppointmentView[]> {

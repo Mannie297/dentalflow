@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { useAppointments } from "@/hooks/use-appointments";
+import { appointmentListRange } from "@/lib/date-range";
 import { useResolvedDateRange } from "@/store/date-range-store";
 import type { AppointmentFilters } from "@/lib/services";
 import type { Appointment, AppointmentStatus, DentalServiceType, PatientType } from "@/types";
@@ -32,9 +33,10 @@ export default function AppointmentsPage() {
   const [patientType, setPatientType] = useState<PatientType | "all">("all");
   const [selectedAppointmentId, setSelectedAppointmentId] = useState<string | null>(null);
 
-  // The List view is bound to the global date-range picker; the Calendar view navigates its own
-  // month independently, so each view queries the date bounds it actually needs.
-  const periodBounds = view === "calendar" ? getCalendarGridRange(calendarMonth) : { from: range.from, to: range.to };
+  // The calendar follows the month on screen. The list keeps the header range's start date
+  // and still includes upcoming visits, which the lookback presets would otherwise cut off at today.
+  const listBounds = appointmentListRange(range);
+  const periodBounds = view === "calendar" ? getCalendarGridRange(calendarMonth) : listBounds;
 
   const filters = useMemo<AppointmentFilters>(
     () => ({

@@ -1,0 +1,1201 @@
+{
+  "name": "ElevenLabs — Reschedule Appointment",
+  "meta": {
+    "description": "Moves an upcoming appointment to a new time. Finds it by appointment_id or by phone (the soonest upcoming visit, or the one on a given date), rejects a closed or already-booked slot, updates the Google Calendar event, then updates the appointment row and logs appointment.rescheduled. Called directly by the ElevenLabs voice agent's reschedule tool. See /docs/N8N_WORKFLOWS.md."
+  },
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook: Reschedule Appointment",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1800,
+        0
+      ],
+      "parameters": {
+        "path": "reschedule-appointment",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Validate & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1580,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const ORG = '11111111-1111-1111-1111-111111111111';\nconst CALENDAR_ID = '';\nconst DENTISTS = ['Dr. Sarah Chen', 'Dr. Amrit Bhandal', 'Dr. Michael Wong'];\n\nfunction normalizePhone(raw) {\n  const digits = String(raw || '').replace(/[^0-9]/g, '');\n  if (digits.length === 10) return `+1${digits}`;\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  if (String(raw || '').trim().startsWith('+') && digits) return `+${digits}`;\n  return digits;\n}\n\nconst b = $input.first().json.body ?? $input.first().json;\nconst errors = [];\n\nconst organizationId = String(b.organization_id || ORG).trim();\nconst calendarId = String(b.calendar_id || CALENDAR_ID).trim();\nconst appointmentId = b.appointment_id ? String(b.appointment_id).trim() : '';\nconst phone = normalizePhone(b.phone);\nconst phoneDigits = phone.replace(/[^0-9]/g, '');\nconst phoneLike = phoneDigits.length >= 7 ? phoneDigits.slice(-10) : '';\nconst date = b.date ? String(b.date).trim().slice(0, 10) : null;\nconst dentistName = b.dentist_name ? String(b.dentist_name).trim() : '';\nconst startsAtDate = b.starts_at ? new Date(b.starts_at) : null;\n\nif (!appointmentId && phoneDigits.length < 7) {\n  errors.push('Either appointment_id, or a phone number with at least 7 digits, is required.');\n}\nif (!startsAtDate || Number.isNaN(startsAtDate.getTime())) errors.push('starts_at must be a valid ISO date-time.');\nif (dentistName && !DENTISTS.includes(dentistName)) {\n  errors.push('dentist_name must be Dr. Sarah Chen, Dr. Amrit Bhandal, or Dr. Michael Wong.');\n}\nif (!calendarId) errors.push('Set CALENDAR_ID in Validate & Normalize, or send calendar_id.');\n\nreturn [{\n  json: {\n    _valid: errors.length === 0,\n    _errors: errors,\n    organization_id: organizationId,\n    calendar_id: calendarId,\n    appointment_id: appointmentId,\n    phone,\n    phone_like: phoneLike,\n    date,\n    dentist_name: dentistName,\n    starts_at: startsAtDate && !Number.isNaN(startsAtDate.getTime()) ? startsAtDate.toISOString() : null\n  }\n}];"
+      }
+    },
+    {
+      "id": "validation_passed",
+      "name": "Validation Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1360,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_invalid",
+      "name": "Respond: Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -1140,
+        280
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._errors.join(' ') } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "has_appointment_id",
+      "name": "Has Appointment Id?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1140,
+        -80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ Boolean($json.appointment_id) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "get_appointment_by_id",
+      "name": "Get Appointment By Id",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -920,
+        -240
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/appointments",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{ $json.appointment_id }}"
+            },
+            {
+              "name": "organization_id",
+              "value": "=eq.{{ $json.organization_id }}"
+            },
+            {
+              "name": "select",
+              "value": "*"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "find_patient_by_phone",
+      "name": "Find Patient By Phone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -920,
+        120
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/patients",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "organization_id",
+              "value": "=eq.{{ $json.organization_id }}"
+            },
+            {
+              "name": "phone",
+              "value": "=match.{{ $json.phone_like }}"
+            },
+            {
+              "name": "select",
+              "value": "id"
+            },
+            {
+              "name": "limit",
+              "value": "10"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "check_patient_match",
+      "name": "Check Patient Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -700,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nconst prior = $('Validate & Normalize').item.json;\nconst ids = matches.map((row) => row.id).filter(Boolean);\nreturn [{ json: { ...prior, patient_id: ids[0] ?? null, patient_ids: ids.join(','), patient_found: ids.length > 0 } }];"
+      }
+    },
+    {
+      "id": "patient_found",
+      "name": "Patient Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.patient_found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_no_patient",
+      "name": "Respond: No Patient",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        320
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: 'No patient was found for that phone number.' } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "get_upcoming_by_patient",
+      "name": "Get Upcoming Appointments By Patient",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -260,
+        40
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/appointments",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "organization_id",
+              "value": "=eq.{{ $json.organization_id }}"
+            },
+            {
+              "name": "patient_id",
+              "value": "=in.({{ $json.patient_ids }})"
+            },
+            {
+              "name": "status",
+              "value": "=in.(requested,confirmed)"
+            },
+            {
+              "name": "starts_at",
+              "value": "=gte.{{ $now.toISO() }}"
+            },
+            {
+              "name": "order",
+              "value": "starts_at.asc"
+            },
+            {
+              "name": "select",
+              "value": "*"
+            },
+            {
+              "name": "limit",
+              "value": "5"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "resolve_appointment",
+      "name": "Resolve Appointment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        -80
+      ],
+      "parameters": {
+        "jsCode": "function clinicDate(iso) {\n  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Toronto', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(iso));\n  const get = (type) => parts.find((part) => part.type === type)?.value ?? '';\n  return `${get('year')}-${get('month')}-${get('day')}`;\n}\nconst body = $json.body ?? [];\nconst matches = Array.isArray(body) ? body : [];\nconst prior = $('Validate & Normalize').item.json;\nconst upcoming = matches.filter((row) => ['requested', 'confirmed'].includes(row.status) && new Date(row.starts_at).getTime() >= Date.now());\nlet chosen = null;\nif (prior.appointment_id) chosen = upcoming[0] ?? null;\nelse if (prior.date) chosen = upcoming.find((row) => clinicDate(row.starts_at) === prior.date) ?? null;\nelse chosen = upcoming[0] ?? null;\nreturn [{ json: { ...prior, found: Boolean(chosen), appointment: chosen } }];"
+      }
+    },
+    {
+      "id": "appointment_found",
+      "name": "Appointment Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        180,
+        -80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_no_appointment",
+      "name": "Respond: No Appointment",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        400,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: 'No upcoming appointment was found to reschedule.' } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "prepare_move",
+      "name": "Prepare Move",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        -220
+      ],
+      "parameters": {
+        "jsCode": "function torontoParts(date) {\n  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Toronto', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);\n  const get = (type) => parts.find((part) => part.type === type)?.value ?? '';\n  return { weekday: get('weekday'), minutes: Number(get('hour')) * 60 + Number(get('minute')) };\n}\nfunction withinHours(start, end) {\n  const open = { Mon: [480, 1080], Tue: [480, 1080], Wed: [480, 1080], Thu: [480, 1080], Fri: [480, 1020], Sat: [540, 780] };\n  const s = torontoParts(start);\n  const e = torontoParts(end);\n  const window = open[s.weekday];\n  if (!window || s.weekday !== e.weekday) return false;\n  return s.minutes >= window[0] && e.minutes <= window[1] && e.minutes > s.minutes;\n}\nconst SERVICE_LABELS = {\n  general_cleaning: 'General Cleaning', emergency_dental: 'Emergency Dental', dental_exam: 'Dental Exam',\n  implants: 'Dental Implants', invisalign: 'Invisalign', whitening: 'Whitening', crowns: 'Crowns',\n  root_canal: 'Root Canal', childrens_dentistry: \"Children's Dentistry\", other: 'Other'\n};\n\nconst prior = $('Resolve Appointment').item.json;\nconst appointment = prior.appointment;\nconst newStart = new Date(prior.starts_at);\nconst oldStart = new Date(appointment.starts_at);\nconst oldEnd = new Date(appointment.ends_at);\nconst durationMs = oldEnd.getTime() > oldStart.getTime() ? oldEnd.getTime() - oldStart.getTime() : 30 * 60000;\nconst newEnd = new Date(newStart.getTime() + durationMs);\nconst dentistName = prior.dentist_name || appointment.dentist_name;\nlet error = null;\nif (Number.isNaN(newStart.getTime())) error = 'starts_at must be a valid ISO date-time.';\nelse if (newStart.getTime() <= Date.now()) error = 'The new time must be in the future.';\nelse if (!withinHours(newStart, newEnd)) error = 'That time is outside clinic hours. Offer a time from Monday to Thursday 8am to 6pm, Friday 8am to 5pm, or Saturday 9am to 1pm.';\nelse if (newStart.getTime() === oldStart.getTime() && dentistName === appointment.dentist_name) error = 'That visit is already at that time.';\n\nconst serviceLabel = SERVICE_LABELS[appointment.service] || appointment.service || 'Appointment';\nreturn [{\n  json: {\n    ...prior,\n    dentist_name: dentistName,\n    new_starts_at: Number.isNaN(newStart.getTime()) ? null : newStart.toISOString(),\n    new_ends_at: Number.isNaN(newEnd.getTime()) ? null : newEnd.toISOString(),\n    _ready: !error,\n    _move_error: error,\n    calendar_summary: `${serviceLabel} — ${appointment.patient_name}`,\n    calendar_description: `Phone: ${prior.phone || ''}\\nRescheduled via DentalFlow AI Receptionist.`\n  }\n}];"
+      }
+    },
+    {
+      "id": "move_ready",
+      "name": "Move Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        620,
+        -220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._ready }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_cannot_move",
+      "name": "Respond: Cannot Move",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        840,
+        40
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._move_error } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "check_availability",
+      "name": "Check Availability",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        -320
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/appointments",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "organization_id",
+              "value": "=eq.{{ $json.organization_id }}"
+            },
+            {
+              "name": "id",
+              "value": "=neq.{{ $json.appointment.id }}"
+            },
+            {
+              "name": "dentist_name",
+              "value": "=eq.{{ $json.dentist_name }}"
+            },
+            {
+              "name": "status",
+              "value": "=in.(requested,confirmed)"
+            },
+            {
+              "name": "starts_at",
+              "value": "=lt.{{ $json.new_ends_at }}"
+            },
+            {
+              "name": "ends_at",
+              "value": "=gt.{{ $json.new_starts_at }}"
+            },
+            {
+              "name": "select",
+              "value": "id"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "evaluate_availability",
+      "name": "Evaluate Availability",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        -320
+      ],
+      "parameters": {
+        "jsCode": "const conflicts = $json.body ?? [];\nconst prior = $('Prepare Move').item.json;\nconst rows = Array.isArray(conflicts) ? conflicts : [];\nreturn [{ json: { ...prior, _available: rows.length === 0 } }];"
+      }
+    },
+    {
+      "id": "slot_available",
+      "name": "Slot Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        -320
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._available }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_unavailable",
+      "name": "Respond: Unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        -80
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: 'That time is already booked for ' + $json.dentist_name + '. Please offer a different time.' } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "has_calendar_event",
+      "name": "Has Calendar Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        -420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ Boolean($json.appointment.calendar_event_id) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "patch_calendar_event",
+      "name": "Update Calendar Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1720,
+        -520
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.calendar_id) }}/events/{{ encodeURIComponent($json.appointment.calendar_event_id) }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ start: { dateTime: $json.new_starts_at }, end: { dateTime: $json.new_ends_at } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "google-calendar-account",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "create_calendar_event",
+      "name": "Create Calendar Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1720,
+        -300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.calendar_id) }}/events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ summary: $json.calendar_summary, description: $json.calendar_description, start: { dateTime: $json.new_starts_at }, end: { dateTime: $json.new_ends_at } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "google-calendar-account",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "read_calendar_response",
+      "name": "Read Calendar Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        -420
+      ],
+      "parameters": {
+        "jsCode": "const prior = $('Prepare Move').item.json;\nconst res = $json;\nlet payload = res.body !== undefined ? res.body : res;\nif (typeof payload === 'string') {\n  try { payload = JSON.parse(payload); } catch (e) { payload = { message: payload }; }\n}\nconst status = Number(res.statusCode || res.status || 0);\nconst ok = status >= 200 && status < 300 && payload && typeof payload.id === 'string';\nconst apiError = payload && payload.error && payload.error.message;\nconst errorMessage = ok ? null : (apiError || `Google Calendar did not update the event (HTTP ${status}). Check the CALENDAR_ID and the Google Calendar account credential.`);\nreturn [{\n  json: {\n    ...prior,\n    _calendar_ok: ok,\n    _calendar_error: errorMessage,\n    calendar_event_id: ok ? payload.id : (prior.appointment.calendar_event_id || null)\n  }\n}];"
+      }
+    },
+    {
+      "id": "calendar_updated",
+      "name": "Calendar Updated?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        -420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._calendar_ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "respond_calendar_failed",
+      "name": "Respond: Calendar Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2380,
+        -240
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json._calendar_error } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "update_appointment",
+      "name": "Update Appointment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2380,
+        -500
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/appointments",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{ $json.appointment.id }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "starts_at",
+              "value": "={{ $json.new_starts_at }}"
+            },
+            {
+              "name": "ends_at",
+              "value": "={{ $json.new_ends_at }}"
+            },
+            {
+              "name": "dentist_name",
+              "value": "={{ $json.dentist_name }}"
+            },
+            {
+              "name": "calendar_event_id",
+              "value": "={{ $json.calendar_event_id }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "log_event",
+      "name": "Log automation_events: appointment.rescheduled",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2600,
+        -500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://lngkdzbhhxlnxweottie.supabase.co/rest/v1/automation_events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "organization_id",
+              "value": "={{ $json.body[0].organization_id }}"
+            },
+            {
+              "name": "event_type",
+              "value": "appointment.rescheduled"
+            },
+            {
+              "name": "entity_type",
+              "value": "appointment"
+            },
+            {
+              "name": "entity_id",
+              "value": "={{ $json.body[0].id }}"
+            },
+            {
+              "name": "payload",
+              "value": "={{ { patient_name: $json.body[0].patient_name, dentist_name: $json.body[0].dentist_name, previous_starts_at: $('Prepare Move').item.json.appointment.starts_at, starts_at: $json.body[0].starts_at, calendar_event_id: $json.body[0].calendar_event_id } }}"
+            },
+            {
+              "name": "status",
+              "value": "completed"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-account",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "respond_success",
+      "name": "Respond: Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2820,
+        -500
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, appointment: $('Update Appointment').item.json.body[0], previous_starts_at: $('Prepare Move').item.json.appointment.starts_at, message: 'Appointment rescheduled.' } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Reschedule Appointment": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalize": {
+      "main": [
+        [
+          {
+            "node": "Validation Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Passed?": {
+      "main": [
+        [
+          {
+            "node": "Has Appointment Id?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Appointment Id?": {
+      "main": [
+        [
+          {
+            "node": "Get Appointment By Id",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Patient By Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Appointment By Id": {
+      "main": [
+        [
+          {
+            "node": "Resolve Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Patient By Phone": {
+      "main": [
+        [
+          {
+            "node": "Check Patient Match",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Patient Match": {
+      "main": [
+        [
+          {
+            "node": "Patient Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Patient Found?": {
+      "main": [
+        [
+          {
+            "node": "Get Upcoming Appointments By Patient",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: No Patient",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Upcoming Appointments By Patient": {
+      "main": [
+        [
+          {
+            "node": "Resolve Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Appointment": {
+      "main": [
+        [
+          {
+            "node": "Appointment Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Appointment Found?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Move",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: No Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Move": {
+      "main": [
+        [
+          {
+            "node": "Move Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move Ready?": {
+      "main": [
+        [
+          {
+            "node": "Check Availability",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Cannot Move",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Availability": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Availability": {
+      "main": [
+        [
+          {
+            "node": "Slot Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slot Available?": {
+      "main": [
+        [
+          {
+            "node": "Has Calendar Event?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Calendar Event?": {
+      "main": [
+        [
+          {
+            "node": "Update Calendar Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Calendar Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Calendar Event": {
+      "main": [
+        [
+          {
+            "node": "Read Calendar Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Calendar Event": {
+      "main": [
+        [
+          {
+            "node": "Read Calendar Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Calendar Response": {
+      "main": [
+        [
+          {
+            "node": "Calendar Updated?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calendar Updated?": {
+      "main": [
+        [
+          {
+            "node": "Update Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Calendar Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Appointment": {
+      "main": [
+        [
+          {
+            "node": "Log automation_events: appointment.rescheduled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log automation_events: appointment.rescheduled": {
+      "main": [
+        [
+          {
+            "node": "Respond: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

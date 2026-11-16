@@ -5,17 +5,18 @@ Books and cancels appointments on the clinic's Google Calendar. The same two n8n
 | Order | Workflow | Webhook |
 |---|---|---|
 | 1 | ElevenLabs — Book Appointment | `POST /webhook/book-appointment` |
-| 2 | ElevenLabs — Cancel Appointment | `POST /webhook/cancel-appointment` |
+| 2 | ElevenLabs — Reschedule Appointment | `POST /webhook/reschedule-appointment` |
+| 3 | ElevenLabs — Cancel Appointment | `POST /webhook/cancel-appointment` |
 
 Field-level spec: [docs/N8N_WORKFLOWS.md](../N8N_WORKFLOWS.md). Agent tool setup: `/n8n/prompts/appointment-tools.md`.
 
 ## What has to be running
 
-- **ElevenLabs — Book Appointment** and **ElevenLabs — Cancel Appointment** are both Active in n8n.
+- **ElevenLabs — Book Appointment**, **ElevenLabs — Reschedule Appointment**, and **ElevenLabs — Cancel Appointment** are Active in n8n.
 - The **Supabase account** and **Google Calendar account** credentials are attached to every node that needs them.
-- `CALENDAR_ID` is pasted into the **Validate & Normalize** node of both workflows (the clinic's Google Calendar id).
+- `CALENDAR_ID` is pasted into the **Validate & Normalize** node of each workflow (the clinic's Google Calendar id). Use the same id in all three.
 - The frontend's `.env.local` has `NEXT_PUBLIC_N8N_BOOK_APPOINTMENT_WEBHOOK_URL` and `NEXT_PUBLIC_N8N_CANCEL_APPOINTMENT_WEBHOOK_URL` set to the production webhook URLs, if DentalFlow's own Book Appointment dialog and Appointments page should go through the same calendar sync. Without those set, the app still books/cancels appointments — it just writes straight to Supabase, with no Google Calendar event.
-- The ElevenLabs agent has the `book_appointment` and `cancel_appointment` tools added (`/n8n/prompts/appointment-tools.md`), if the voice agent should be able to use them on a call.
+- The ElevenLabs agent has the `book_appointment`, `reschedule_appointment`, and `cancel_appointment` tools added (`/n8n/prompts/appointment-tools.md`), if the voice agent should be able to use them on a call.
 
 ## What happens — booking
 
@@ -33,6 +34,15 @@ Field-level spec: [docs/N8N_WORKFLOWS.md](../N8N_WORKFLOWS.md). Agent tool setup
 3. If the appointment has a `calendar_event_id`, that Google Calendar event is deleted. A missing or already-deleted event does not block the cancellation — Supabase is still updated.
 4. The appointment's status is set to `cancelled`. `appointment.cancelled` is logged to `automation_events`.
 
+## What happens — rescheduling
+
+1. The agent posts the caller's phone, the new start time, and, when they have more than one upcoming visit, the date of the visit to move. A different dentist is sent only when they asked for one.
+2. The workflow finds that upcoming appointment. No match returns a controlled failure, and the visit stays where it is.
+3. The new time has to be in the future and inside clinic hours. The visit keeps its current length. The same dentist at the same time is rejected.
+4. The dentist's other appointments are checked for an overlap. The visit being moved is excluded, so its current time does not block the move. A conflict returns a controlled failure.
+5. The existing Google Calendar event is updated to the new start and end. A visit with no calendar event gets one created. If Calendar fails, the appointment row is left unchanged.
+6. The appointment row is updated to the new time and dentist. `appointment.rescheduled` is logged to `automation_events`.
+
 ## Where to look
 
 The webhook response is the first check: `success: true` with the full `appointment` row, including `calendar_event_id` on a booking. The clinic's Google Calendar should show the new or removed event within a few seconds. In DentalFlow, the Appointments page reflects the change on its next refresh (the Book Appointment dialog and the status dropdown both trigger a refetch already).
@@ -43,7 +53,10 @@ The webhook response is the first check: `success: true` with the full `appointm
 - `"That time is already booked for <dentist>..."` — a real conflict. Offer a different time; this is not a bug.
 - `"Google Calendar did not create the event (HTTP ...)"` — the **Google Calendar account** credential likely needs reconnecting (OAuth tokens expire), or `CALENDAR_ID` doesn't exist or isn't shared with that account with edit access.
 - `"No upcoming appointment was found to cancel."` — the phone number didn't match a patient, or they have no `requested`/`confirmed` appointment in the future. Check the number and try again, or use the appointment id instead.
+- `"No upcoming appointment was found to reschedule."` — same lookup as cancel. The date, when sent, is the current visit's day in Toronto, not the new day.
+- `"That time is outside clinic hours..."` or `"That time is already booked..."` — the visit was not moved. Offer a different time.
+- `"That visit is already at that time."` — the caller asked for the slot they already have.
 
 ## What this does not do
 
-It does not reschedule an appointment (no "move this to a different time" tool) — cancel and re-book instead. It does not send a calendar invite email to the patient; the event is created on the clinic's calendar only.
+It does not send a calendar invite email to the patient. The event stays on the clinic's calendar only. Rescheduling does not change the service or the length of the visit.

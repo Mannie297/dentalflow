@@ -24,7 +24,7 @@
       "typeVersion": 2,
       "position": [-220, 0],
       "parameters": {
-        "jsCode": "const ORG = '11111111-1111-1111-1111-111111111111';\n\nreturn [{\n  json: {\n    type: 'conversation_initiation_client_data',\n    dynamic_variables: {\n      organization_id: ORG,\n      direction: 'inbound',\n      patient_name: 'there',\n      caller_name: 'there',\n      call_reason: 'your recent visit',\n      opening_line: 'Thank you for calling Maple Grove Dental Clinic. This is the virtual receptionist. How can I help you today?'\n    }\n  }\n}];"
+        "jsCode": "const ORG = '11111111-1111-1111-1111-111111111111';\n\nreturn [{\n  json: {\n    type: 'conversation_initiation_client_data',\n    dynamic_variables: {\n      organization_id: ORG,\n      direction: 'inbound',\n      patient_name: 'there',\n      caller_name: 'there',\n      call_reason: 'your recent visit',\n      opening_line: 'Thank you for calling Maple Grove Dental Clinic. This is the virtual receptionist. How can I help you today?',\n      upcoming_visit: 'none'\n    }\n  }\n}];"
       }
     },
     {

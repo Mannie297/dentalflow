@@ -50,6 +50,23 @@ export function getPreviousPeriod(range: DateRange): { from: string; to: string 
   };
 }
 
+const UPCOMING_LOOKAHEAD_MS = 366 * DAY_MS;
+
+/**
+ * The header presets end today, which hides a visit booked for tomorrow.
+ * Lookback presets keep their start date and extend through the next year.
+ * Today, yesterday, and a custom range stay on the dates the user picked.
+ */
+export function appointmentListRange(range: DateRange): { from: string; to: string } {
+  if (range.preset === "today" || range.preset === "yesterday" || range.preset === "custom") {
+    return { from: range.from, to: range.to };
+  }
+  return {
+    from: range.from,
+    to: new Date(new Date(range.to).getTime() + UPCOMING_LOOKAHEAD_MS).toISOString(),
+  };
+}
+
 export function isWithinRange(iso: string, from: string, to: string): boolean {
   const t = new Date(iso).getTime();
   return t >= new Date(from).getTime() && t <= new Date(to).getTime();

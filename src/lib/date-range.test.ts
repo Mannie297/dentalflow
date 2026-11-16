@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateTrend, getPreviousPeriod, isWithinRange, resolveDateRange } from "./date-range";
+import { appointmentListRange, calculateTrend, getPreviousPeriod, isWithinRange, resolveDateRange } from "./date-range";
 
 describe("resolveDateRange", () => {
   const now = new Date("2026-10-02T15:00:00.000Z");
@@ -56,6 +56,26 @@ describe("isWithinRange", () => {
   it("excludes timestamps outside the range", () => {
     expect(isWithinRange("2025-12-31T23:59:59.000Z", "2026-01-01T00:00:00.000Z", "2026-01-10T00:00:00.000Z")).toBe(false);
     expect(isWithinRange("2026-01-10T00:00:01.000Z", "2026-01-01T00:00:00.000Z", "2026-01-10T00:00:00.000Z")).toBe(false);
+  });
+});
+
+describe("appointmentListRange", () => {
+  const now = new Date("2026-11-17T15:00:00.000Z");
+
+  it("keeps the lookback start and includes a visit booked after today", () => {
+    const range = resolveDateRange("last_30_days", undefined, now);
+    const list = appointmentListRange(range);
+    expect(list.from).toBe(range.from);
+    expect(new Date(list.to).getTime()).toBeGreaterThan(new Date("2027-11-17T00:00:00.000Z").getTime());
+  });
+
+  it("leaves today, yesterday, and a custom range unchanged", () => {
+    for (const preset of ["today", "yesterday"] as const) {
+      const range = resolveDateRange(preset, undefined, now);
+      expect(appointmentListRange(range)).toEqual({ from: range.from, to: range.to });
+    }
+    const custom = resolveDateRange("custom", { from: "2026-11-01T00:00:00.000Z", to: "2026-11-02T00:00:00.000Z" }, now);
+    expect(appointmentListRange(custom)).toEqual({ from: custom.from, to: custom.to });
   });
 });
 

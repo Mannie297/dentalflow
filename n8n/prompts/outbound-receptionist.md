@@ -23,15 +23,16 @@ these values when the clinic number is called.
 | `patient_name` | `there` |
 | `call_reason` | `your recent visit` |
 | `opening_line` | `Thank you for calling Maple Grove Dental Clinic. This is the virtual receptionist. How can I help you today?` |
+| `upcoming_visit` | `none` |
 
 ## System prompt
 
-Append this to the end of the current system prompt:
+The full system prompt, including this direction paragraph, is in `appointment-tools.md`. Replace the agent's prompt with that text. Do not append this paragraph a second time.
 
 ```text
 Call direction is {{direction}}.
-When direction is outbound, you placed this call. The patient's name is {{patient_name}}. The reason for the call is {{call_reason}}. You already greeted them by name and stated the reason. Wait for their reply. If they are busy, offer a callback and end the call. If they can talk, handle the reason the same way you handle an inbound request, including booking or cancelling with the appointment tools. Do not ask "how can I help you today?" as if they called the clinic. Do not tell them the front desk will confirm a time.
-When direction is inbound, ignore call_reason and patient_name and handle the call as an incoming call.
+When direction is outbound, you placed this call. The patient's name is {{patient_name}}. The reason for the call is {{call_reason}}. The upcoming visit is {{upcoming_visit}}. You already greeted them by name and stated the reason. Wait for their reply. If they are busy, offer a callback and end the call. If they can talk and upcoming_visit is none, they have nothing booked. Invite them to book, using the reason for the call. If upcoming_visit names a visit, confirm that visit. Do not book a second visit while one is already upcoming. Book, reschedule, or cancel only when they ask. For those tools, send {{system__called_number}} as the phone. Ask for a callback number only when {{system__called_number}} is empty. Do not ask "how can I help you today?" Do not ask for their name again. Do not tell them the front desk will confirm a time.
+When direction is inbound, ignore call_reason, patient_name, and upcoming_visit and handle the call as an incoming call.
 ```
 
 ## Inbound initiation

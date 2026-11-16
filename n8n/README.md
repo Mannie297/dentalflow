@@ -19,9 +19,10 @@ open in the n8n editor — see "Known caveats" below.
 - `workflows/missed-call-recovery.json` — **Missed Call Recovery** (queues a voice callback for each inbound missed call)
 - `workflows/elevenlabs-book-appointment.json` — **ElevenLabs — Book Appointment** (creates a Google Calendar event and the appointment row)
 - `workflows/elevenlabs-cancel-appointment.json` — **ElevenLabs — Cancel Appointment** (deletes the Google Calendar event and marks the appointment cancelled)
+- `workflows/elevenlabs-reschedule-appointment.json` — **ElevenLabs — Reschedule Appointment** (moves an upcoming visit on Google Calendar and in DentalFlow)
 - `prompts/lead_score.md` — the prompt template used by AI — Lead Qualification
 - `prompts/outbound-receptionist.md` — agent settings for outbound calls on the existing receptionist
-- `prompts/appointment-tools.md` — agent Tools setup so the voice agent can book/cancel appointments
+- `prompts/appointment-tools.md` — agent Tools setup so the voice agent can book, reschedule, and cancel appointments
 
 Full behavioral spec, payload shapes, and event contracts: `/docs/N8N_WORKFLOWS.md`.
 
@@ -45,6 +46,7 @@ How each live process runs: `/docs/procedures/README.md`.
 14. Run `supabase/migrations/0006_appointment_calendar_sync.sql` in the Supabase SQL editor (adds `appointments.calendar_event_id`). Create a Google Calendar OAuth2 credential named **Google Calendar account** (see below), then import `elevenlabs-book-appointment.json`. Attach **Supabase account** to every Supabase node and **Google Calendar account** to **Create Calendar Event**. In **Validate & Normalize**, paste the clinic's Google Calendar id into `CALENDAR_ID` (the calendar's own address, e.g. a `...@group.calendar.google.com` id, or `primary` for the connected account's main calendar). Activate it, then copy the production URL (`/webhook/book-appointment`) into `NEXT_PUBLIC_N8N_BOOK_APPOINTMENT_WEBHOOK_URL` so the Book Appointment dialog uses it too.
 15. Import `elevenlabs-cancel-appointment.json`. Attach **Supabase account** and **Google Calendar account** the same way, and set the same `CALENDAR_ID` in its **Validate & Normalize** node. Activate it, then copy the production URL (`/webhook/cancel-appointment`) into `NEXT_PUBLIC_N8N_CANCEL_APPOINTMENT_WEBHOOK_URL`.
 16. Add the `book_appointment` and `cancel_appointment` tools to the agent so it can use these workflows on a live call — see `prompts/appointment-tools.md`.
+17. Import `elevenlabs-reschedule-appointment.json`. Attach **Supabase account** and **Google Calendar account** the same way, and set the same `CALENDAR_ID` in its **Validate & Normalize** node. Activate it. The production URL is `/webhook/reschedule-appointment`. Add the `reschedule_appointment` tool from `prompts/appointment-tools.md`. Do not re-import the book or cancel workflows to pick this up.
 
 ## Required n8n credentials
 
@@ -53,7 +55,7 @@ How each live process runs: `/docs/procedures/README.md`.
 | `Supabase account` | n8n's built-in **Supabase API** credential (fields: Host, Service Role Secret) | All reads/writes to Supabase via PostgREST (`/rest/v1/...`) |
 | `OpenAI` | n8n's built-in OpenAI credential | Calling the AI model in **AI — Lead Qualification**, and `text-embedding-3-small` in the knowledge workflows |
 | `ElevenLabs API` | n8n **Header Auth**. Header name `xi-api-key`, value is the ElevenLabs API key | Placing an outbound call |
-| `Google Calendar account` | n8n's built-in **Google Calendar OAuth2 API** credential | Creating/deleting the calendar event for a booked/cancelled appointment |
+| `Google Calendar account` | n8n's built-in **Google Calendar OAuth2 API** credential | Creating, moving, and deleting the calendar event for a booked, rescheduled, or cancelled appointment |
 
 For the Google Calendar credential: connect it to the Google account that owns the clinic's
 calendar (or a calendar it has been shared with, with "Make changes to events" permission) via

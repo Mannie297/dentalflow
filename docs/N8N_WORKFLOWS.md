@@ -243,8 +243,14 @@ Webhook
   -> Prepare Outbound Call
   -> Ready?
        |-- no  --> 400
-       |-- yes --> POST ElevenLabs outbound-call
-                 --> Respond { success, conversation_id }
+       |-- yes --> Find Patient By Phone
+                 -> Pick Patient
+                 -> Patient Found?
+                      |-- yes --> Get Upcoming Appointment
+                      |-- no  --> Build Opening Line
+                 -> Build Opening Line
+                 -> POST ElevenLabs outbound-call
+                 -> Respond { success, conversation_id }
 ```
 
 ### Input
@@ -260,7 +266,9 @@ Webhook
 
 `organization_id` defaults to the Maple Grove id. Before the first call, paste the agent id and the clinic phone number id into **Prepare Outbound Call**. The phone number id starts with `phnum_` and is the id on the ElevenLabs phone number page, not the `+1` number patients dial. `provider` defaults to `twilio`. Send `"provider": "sip_trunk"` when the clinic number is a SIP trunk instead of Twilio.
 
-The request sets dynamic variables `direction=outbound`, `patient_name`, `call_reason`, `organization_id`, and `opening_line`. The agent's first message is `{{opening_line}}`. Do not enable a first-message override. ElevenLabs rejects the dial when that override is sent and the security switch is off, and the workflow was answering with HTTP 502, which the n8n gateway replaced with a blank Bad Gateway page.
+Before dialing, the workflow finds patients whose phone contains the last 10 digits and loads the soonest upcoming `requested` or `confirmed` visit. A generic reason (`a follow-up to your recent call` or `a follow-up to your recent visit`) is replaced with that visit, for example `your cleaning with Dr. Michael Wong on Wednesday, November 18 at 4 p.m.` A specific reason is kept. `upcoming_visit` is that sentence, or `none` when there is no upcoming visit.
+
+The request sets dynamic variables `direction=outbound`, `patient_name`, `caller_name`, `call_reason`, `upcoming_visit`, `organization_id`, and `opening_line`. The opening line is `Hi {first name}, this is Maple Grove Dental Clinic calling about {call_reason}. Do you have a moment?` The agent's first message is `{{opening_line}}`. Do not enable a first-message override. ElevenLabs rejects the dial when that override is sent and the security switch is off, and the workflow was answering with HTTP 502, which the n8n gateway replaced with a blank Bad Gateway page.
 
 Success:
 
@@ -289,7 +297,8 @@ The agent's first message is `{{opening_line}}`. Outbound calls send that variab
     "patient_name": "there",
     "caller_name": "there",
     "call_reason": "your recent visit",
-    "opening_line": "Thank you for calling Maple Grove Dental Clinic. This is the virtual receptionist. How can I help you today?"
+    "opening_line": "Thank you for calling Maple Grove Dental Clinic. This is the virtual receptionist. How can I help you today?",
+    "upcoming_visit": "none"
   }
 }
 ```
@@ -421,7 +430,7 @@ A match means the requested time overlaps an existing booking for that dentist. 
 
 ### Patient lookup
 
-Same find-or-create-by-phone pattern as CORE — Call Intake's patient handling: `GET /rest/v1/patients?organization_id=eq.{id}&phone=eq.{phone}`, creating a new `patient_type: "new"` patient on no match.
+A 10-digit number is stored as `+1` plus those digits. Lookup uses the last 10 digits, `GET /rest/v1/patients?organization_id=eq.{id}&phone=match.{last10}`, so `4379953109` and `+14379953109` find the same patient. When more than one row matches, the row whose phone already equals that canonical number is reused. A new `patient_type: "new"` patient is created only when none match.
 
 ### Google Calendar event
 
@@ -488,7 +497,7 @@ Or a phone lookup (the common case from a phone call, where the caller only know
 
 ### Appointment lookup
 
-By id: `GET /rest/v1/appointments?id=eq.{id}&organization_id=eq.{org}`. By phone: find the patient (`GET /rest/v1/patients?phone=eq...`), then the patient's next up to 5 appointments with `status=in.(requested,confirmed)&starts_at=gte.{now}&order=starts_at.asc`, picking the one matching `date` when given.
+By id: `GET /rest/v1/appointments?id=eq.{id}&organization_id=eq.{org}`. By phone: find every patient whose phone ends in the same 10 digits (`phone=match.{last10}`), then their upcoming appointments with `patient_id=in.({ids})&status=in.(requested,confirmed)&starts_at=gte.{now}&order=starts_at.asc`. When `date` is sent, the visit is the one whose start falls on that date in `America/Toronto`. A date that matches nothing is left uncancelled.
 
 ### Google Calendar event
 
@@ -507,4 +516,93 @@ Success:
 Controlled failure (validation, no matching patient, no upcoming appointment):
 ```json
 { "success": false, "error": "No upcoming appointment was found to cancel." }
+```
+
+## ElevenLabs — Reschedule Appointment
+
+**Trigger:** `POST` webhook (`/webhook/reschedule-appointment`). Called directly by the ElevenLabs voice agent's `reschedule_appointment` tool. The DentalFlow app does not call this webhook.
+
+Importable JSON: `/n8n/workflows/elevenlabs-reschedule-appointment.json`.
+
+```
+Webhook
+  -> Validate & Normalize
+  -> Validation Passed?
+       |-- no  --> Respond: Invalid
+       |-- yes --> Has Appointment Id?
+                      |-- yes --> Get Appointment By Id (Supabase)
+                      |-- no  --> Find Patient By Phone (Supabase)
+                                -> Patient Found?
+                                     |-- no  --> Respond: No Patient
+                                     |-- yes --> Get Upcoming Appointments By Patient (Supabase)
+                 -> Resolve Appointment
+                 -> Appointment Found?
+                      |-- no  --> Respond: No Appointment
+                      |-- yes --> Prepare Move
+                                -> Move Ready?
+                                     |-- no  --> Respond: Cannot Move
+                                     |-- yes --> Check Availability (Supabase, excluding this visit)
+                                               -> Slot Available?
+                                                    |-- no  --> Respond: Unavailable
+                                                    |-- yes --> Has Calendar Event?
+                                                                   |-- yes --> Update Calendar Event (Google Calendar PATCH)
+                                                                   |-- no  --> Create Calendar Event (Google Calendar POST)
+                                               -> Read Calendar Response
+                                               -> Calendar Updated?
+                                                    |-- no  --> Respond: Calendar Failed
+                                                    |-- yes --> Update Appointment (Supabase)
+                                                              -> Log automation_events: appointment.rescheduled
+                                                              -> Respond: Success
+```
+
+### Input
+
+```json
+{
+  "organization_id": "uuid",
+  "phone": "+14165550199",
+  "starts_at": "2026-11-20T14:00:00-05:00",
+  "date": "2026-11-18",
+  "dentist_name": "Dr. Sarah Chen"
+}
+```
+
+`organization_id` defaults to the Maple Grove id when omitted. `starts_at` is the new time and is required. `date` is optional and is the current visit's day in `America/Toronto`, used only when the caller has more than one upcoming visit. `dentist_name` is optional; omit it to keep the current dentist. When it is sent it must be exactly `Dr. Sarah Chen`, `Dr. Amrit Bhandal`, or `Dr. Michael Wong`. Either `appointment_id` or a `phone` with at least 7 digits is required. The voice agent sends `phone`, not `appointment_id`.
+
+Phone lookup uses the last 10 digits, the same way cancel does, so `4379953109` and `+14379953109` find the same patient.
+
+### Move rules
+
+The visit keeps its current length. The new start must be in the future. In `America/Toronto` it must fall on Monday to Thursday 8:00 a.m. to 6:00 p.m., Friday 8:00 a.m. to 5:00 p.m., or Saturday 9:00 a.m. to 1:00 p.m., and it must finish the same day. Moving a visit onto the time it already occupies, with the same dentist, is rejected.
+
+### Availability check
+
+`GET /rest/v1/appointments?organization_id=eq.{id}&id=neq.{appointment_id}&dentist_name=eq.{name}&status=in.(requested,confirmed)&starts_at=lt.{new_ends_at}&ends_at=gt.{new_starts_at}&select=id&limit=1`
+
+The visit being moved is excluded, so its current slot does not count as a conflict. Any other overlap returns a controlled failure and leaves the visit where it is.
+
+### Google Calendar event
+
+When the appointment has a `calendar_event_id`, `PATCH https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events/{calendar_event_id}` updates `start` and `end`. When it has none, a new event is created and its id is stored. If the Calendar call fails, the appointment row is not updated.
+
+### Appointment row
+
+`PATCH /rest/v1/appointments?id=eq.{id}` sets `starts_at`, `ends_at`, `dentist_name`, and `calendar_event_id`. Status, service, patient, and notes stay as they are.
+
+### Event logged
+
+`automation_events` row: `event_type = "appointment.rescheduled"`, `entity_type = "appointment"`, `entity_id = <appointment id>`, `payload` includes `patient_name`, `dentist_name`, `previous_starts_at`, `starts_at`, `calendar_event_id`.
+
+### Response contract
+
+Every response is HTTP 200 so the agent can read `error` aloud. Success:
+
+```json
+{ "success": true, "appointment": { "id": "uuid", "starts_at": "2026-11-20T19:00:00.000Z", "...": "the updated appointments row" }, "previous_starts_at": "2026-11-18T21:00:00.000Z", "message": "Appointment rescheduled." }
+```
+
+Controlled failure:
+
+```json
+{ "success": false, "error": "That time is already booked for Dr. Sarah Chen. Please offer a different time." }
 ```
