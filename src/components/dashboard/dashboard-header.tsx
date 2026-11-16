@@ -29,7 +29,27 @@ export function DashboardHeader({ ownerFirstName, clinicName }: { ownerFirstName
           <Megaphone className="h-4 w-4" aria-hidden="true" />
           Launch Campaign
         </Button>
-        <Button size="sm" className="gap-1.5" nativeButton={false} render={<Link href="/dashboard#ai-insights" />}>
+        <Button
+          size="sm"
+          className="gap-1.5"
+          nativeButton={false}
+          render={
+            <Link
+              href="/dashboard#ai-insights"
+              onClick={(event) => {
+                const target = document.getElementById("ai-insights");
+                if (target) {
+                  event.preventDefault();
+                  target.scrollIntoView({ behavior: "smooth", block: "start" });
+                  window.history.replaceState(null, "", "#ai-insights");
+                }
+                // If the panel hasn't mounted yet (data still loading), let the
+                // navigation set the hash and fall through to the dashboard
+                // page's own effect, which scrolls once the data is ready.
+              }}
+            />
+          }
+        >
           <Sparkles className="h-4 w-4" aria-hidden="true" />
           View AI Insights
         </Button>

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { useDashboardMetrics } from "@/hooks/use-dashboard";
 import { useResolvedDateRange } from "@/store/date-range-store";
@@ -23,6 +24,20 @@ export default function DashboardPage() {
   const range = useResolvedDateRange();
   const { data, isLoading, isError, error, refetch } = useDashboardMetrics(range);
   const needsSignIn = error instanceof NotAuthenticatedError;
+
+  // The AI Insights panel only mounts once `data` has loaded. If "View AI
+  // Insights" is clicked while the dashboard is still loading, the browser's
+  // native hash-scroll has nothing to jump to yet. Once loading finishes and
+  // the panel is in the DOM, scroll to it if that's still where the URL hash
+  // points (covers both an in-progress click and a direct/external deep link).
+  useEffect(() => {
+    if (!data) return;
+    if (window.location.hash === "#ai-insights") {
+      requestAnimationFrame(() => {
+        document.getElementById("ai-insights")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }, [data]);
 
   return (
     <div className="space-y-6">
